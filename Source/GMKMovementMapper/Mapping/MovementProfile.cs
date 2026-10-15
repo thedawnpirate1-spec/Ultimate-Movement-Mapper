@@ -48,6 +48,7 @@ public sealed class MovementProfile
     public bool DarkMode { get; set; }
     public AppearanceMode Appearance { get; set; } = AppearanceMode.Dark;
     public bool LowLatencyMode { get; set; }
+    public bool KeepMouseActive { get; set; } = true;
     public bool SetupComplete { get; set; }
     public MovementOutputMode OutputMode { get; set; } = MovementOutputMode.Keyboard;
     public bool ControllerDiagonalLock { get; set; } = true;

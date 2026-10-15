@@ -21,8 +21,6 @@ public sealed class StickVisualizer : Control
     private RectangleF _stickCircle;
     private bool _draggingStart;
     private bool _zoneEditingEnabled;
-    private Bitmap? _staticLayer;
-    private bool _staticDirty = true;
     public event Action<double, double>? DiagonalZoneChanged;
     public void SetZoneEditing(bool enabled) { _zoneEditingEnabled = enabled; Cursor = enabled ? Cursors.Cross : Cursors.Default; Invalidate(); }
 
@@ -39,9 +37,8 @@ public sealed class StickVisualizer : Control
     {
         _x = Math.Clamp(x, -1.0, 1.0);
         _y = Math.Clamp(y, -1.0, 1.0);
-        var nextDeadzone = Math.Clamp(deadzone, 0.0, 1.0); var nextOuter = Math.Clamp(outerZone, 0.5, 1.0);
-        if (Math.Abs(nextDeadzone - _deadzone) > 0.0001 || Math.Abs(nextOuter - _outerZone) > 0.0001) _staticDirty = true;
-        _deadzone = nextDeadzone; _outerZone = nextOuter;
+        _deadzone = Math.Clamp(deadzone, 0.0, 1.0);
+        _outerZone = Math.Clamp(outerZone, 0.5, 1.0);
         _movement = movement;
         _aPressed = aPressed;
         _analogX = analogX;
@@ -52,7 +49,6 @@ public sealed class StickVisualizer : Control
     public void SetDarkMode(bool dark)
     {
         BackColor = dark ? Color.FromArgb(20, 27, 39) : Color.FromArgb(28, 31, 36);
-        _staticDirty = true;
         Invalidate();
     }
 
@@ -60,13 +56,12 @@ public sealed class StickVisualizer : Control
     {
         _showDiagonalRange = enabled;
         _diagonalStart = Math.Clamp(startDegrees, 0, 89);
-        _diagonalWindow = Math.Clamp(windowDegrees, 0, 90);
+        _diagonalWindow = Math.Clamp(windowDegrees, 0, 45);
         _rotation = rotationDegrees;
-        _staticDirty = true;
         Invalidate();
     }
 
-    public void SetEmphasis(string? area) { _emphasis = area; _staticDirty = true; Invalidate(); }
+    public void SetEmphasis(string? area) { _emphasis = area; Invalidate(); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -85,11 +80,43 @@ public sealed class StickVisualizer : Control
         var centerY = circle.Top + circle.Height / 2f;
         var radius = diameter / 2f;
 
-        EnsureStaticLayer(circle);
-        if (_staticLayer is not null) e.Graphics.DrawImageUnscaled(_staticLayer, 0, 0);
+        using var boundary = new Pen(Color.FromArgb(210, 220, 230), 2f);
+        using var guide = new Pen(Color.FromArgb(65, 210, 220, 230), 1f);
+        using var deadzoneFill = new SolidBrush(Color.FromArgb(_emphasis == "deadzone" ? 115 : 70, 230, 75, 75));
+        using var deadzoneLine = new Pen(Color.FromArgb(220, 230, 90, 90), _emphasis == "deadzone" ? 3f : 1.5f);
         using var outputLine = new Pen(Color.FromArgb(70, 170, 255), 3f);
         using var rawLine = new Pen(Color.FromArgb(60, 230, 125), 3f);
         using var rawDot = new SolidBrush(Color.FromArgb(75, 240, 135));
+
+        if (_showDiagonalRange)
+        {
+            using var snapFill = new SolidBrush(Color.FromArgb(_emphasis == "diagonal" ? 85 : 45, 139, 92, 246));
+            using var snapEdge = new Pen(Color.FromArgb(210, 167, 139, 250), _emphasis == "diagonal" ? 2.8f : 1.4f);
+            var width = (float)Math.Min(_diagonalWindow, 90 - _diagonalStart);
+            var middle = (float)(_diagonalStart + width / 2.0);
+            DrawForwardSector(e.Graphics, circle, -middle - (float)_rotation, width / 2f, snapFill, snapEdge);
+            DrawForwardSector(e.Graphics, circle, -180f + middle - (float)_rotation, width / 2f, snapFill, snapEdge);
+        }
+
+        e.Graphics.DrawEllipse(boundary, circle);
+        e.Graphics.DrawLine(guide, centerX - radius, centerY, centerX + radius, centerY);
+        e.Graphics.DrawLine(guide, centerX, centerY - radius, centerX, centerY + radius);
+        for (var i = 0; i < 4; i++)
+        {
+            var angle = (22.5 + i * 45.0) * Math.PI / 180.0;
+            var dx = (float)(Math.Cos(angle) * radius);
+            var dy = (float)(Math.Sin(angle) * radius);
+            e.Graphics.DrawLine(guide, centerX - dx, centerY - dy, centerX + dx, centerY + dy);
+        }
+
+        var deadzoneRadius = (float)(_deadzone * radius);
+        var deadzoneRect = new RectangleF(centerX - deadzoneRadius, centerY - deadzoneRadius,
+            deadzoneRadius * 2, deadzoneRadius * 2);
+        e.Graphics.FillEllipse(deadzoneFill, deadzoneRect);
+        e.Graphics.DrawEllipse(deadzoneLine, deadzoneRect);
+        var outerRadius = (float)(_outerZone * radius);
+        using var outerLine = new Pen(Color.FromArgb(190, 245, 158, 11), _emphasis == "outer" ? 3f : 1.4f) { DashStyle = DashStyle.Dash };
+        e.Graphics.DrawEllipse(outerLine, centerX - outerRadius, centerY - outerRadius, outerRadius * 2, outerRadius * 2);
 
         var outputX = _analogX ?? ((_movement.Right ? 1 : 0) - (_movement.Left ? 1 : 0));
         var outputY = _analogY ?? ((_movement.Forward ? 1 : 0) - (_movement.Backward ? 1 : 0));
@@ -109,30 +136,6 @@ public sealed class StickVisualizer : Control
         e.Graphics.DrawLine(rawLine, centerX, centerY, rawX, rawY);
         e.Graphics.FillEllipse(rawDot, rawX - 7, rawY - 7, 14, 14);
 
-    }
-
-    protected override void OnResize(EventArgs e) { _staticDirty = true; base.OnResize(e); }
-
-    private void EnsureStaticLayer(RectangleF circle)
-    {
-        if (!_staticDirty && _staticLayer?.Size == ClientSize) return;
-        _staticLayer?.Dispose(); _staticLayer = new Bitmap(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
-        using var graphics = Graphics.FromImage(_staticLayer); graphics.SmoothingMode = SmoothingMode.AntiAlias; graphics.Clear(BackColor);
-        var centerX = circle.Left + circle.Width / 2f; var centerY = circle.Top + circle.Height / 2f; var radius = circle.Width / 2f;
-        using var boundary = new Pen(Color.FromArgb(210,220,230),2f); using var guide = new Pen(Color.FromArgb(65,210,220,230),1f);
-        if (_showDiagonalRange)
-        {
-            using var fill = new SolidBrush(Color.FromArgb(_emphasis == "diagonal" ? 85 : 45,139,92,246));
-            using var edge = new Pen(Color.FromArgb(210,167,139,250),_emphasis == "diagonal" ? 2.8f : 1.4f);
-            var width=(float)Math.Min(_diagonalWindow,90-_diagonalStart); var middle=(float)(_diagonalStart+width/2.0);
-            DrawForwardSector(graphics,circle,-middle-(float)_rotation,width/2f,fill,edge); DrawForwardSector(graphics,circle,-180f+middle-(float)_rotation,width/2f,fill,edge);
-        }
-        graphics.DrawEllipse(boundary,circle); graphics.DrawLine(guide,centerX-radius,centerY,centerX+radius,centerY); graphics.DrawLine(guide,centerX,centerY-radius,centerX,centerY+radius);
-        for(var i=0;i<4;i++){var a=(22.5+i*45.0)*Math.PI/180.0;var dx=(float)(Math.Cos(a)*radius);var dy=(float)(Math.Sin(a)*radius);graphics.DrawLine(guide,centerX-dx,centerY-dy,centerX+dx,centerY+dy);}
-        var dz=(float)(_deadzone*radius); using var dzFill=new SolidBrush(Color.FromArgb(_emphasis=="deadzone"?115:70,230,75,75)); using var dzLine=new Pen(Color.FromArgb(220,230,90,90),_emphasis=="deadzone"?3f:1.5f);
-        graphics.FillEllipse(dzFill,centerX-dz,centerY-dz,dz*2,dz*2); graphics.DrawEllipse(dzLine,centerX-dz,centerY-dz,dz*2,dz*2);
-        var outer=(float)(_outerZone*radius); using var outerLine=new Pen(Color.FromArgb(190,245,158,11),_emphasis=="outer"?3f:1.4f){DashStyle=DashStyle.Dash}; graphics.DrawEllipse(outerLine,centerX-outer,centerY-outer,outer*2,outer*2);
-        _staticDirty=false;
     }
 
     protected override void OnMouseDown(MouseEventArgs e)

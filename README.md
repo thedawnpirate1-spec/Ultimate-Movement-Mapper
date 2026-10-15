@@ -1,20 +1,14 @@
 # GMK Movement Mapper
 
-A clean-room, low-latency Windows mapper for GMK joysticks. It supports eight-way keyboard movement and an optional on-demand virtual Xbox controller with fully configurable forward diagonal locking.
+This is a clean-room replacement for the old GMK DriverNet user-mode app. It is deliberately split into three pieces:
 
-## Highlights
+1. A direct USB reader matching the original driver's interface 0, endpoint `0x81`, and 13-byte GMK report format.
+2. A choice between eight-way keyboard movement and native analog movement through an on-demand virtual Xbox controller.
+3. An optional HidHide integration that invokes the installed HidHideCLI. HidHide remains an installed, signed kernel filter; it is not copied into this application or replaced with an unsigned driver.
 
-- Direct GMK USB input for VID 0483 and joystick PIDs 5750/5751
-- Custom movement keys and GMK A-button output
-- Keyboard mode creates no virtual controller
-- Controller mode exists only while movement is running
-- Configurable diagonal target, range, rotation, deadzones and response curve
-- HidHide setup, profiles, calibration, diagnostics and reconnect recovery
-- DPI-aware interface, tray performance mode and Dark/Light/Black themes
+The movement keys default to W/A/S/D and the GMK A button defaults to comma. Click any displayed key and press a new keyboard key to remap it. The live stick panel shows the physical input vector, deadzone, selected eight-way output, and A-button state.
 
-## Version 17 performance changes
-
-ViGEm automatic report submission is disabled. Controller mode submits one complete report only when its quantized axes or mapped button state changes. Live graphics and diagnostics pause while the app is inactive or minimized; input and output continue at full speed.
+The public GMK source confirms that the original app used VID `0483`, joystick PIDs `5750`/`5751`, LibUsbDotNet, and ViGEm.NET. Keyboard mode creates no virtual controller. Controller mode creates one only while **Start movement** is active and removes it immediately when movement stops.
 
 ## Installation
 
@@ -38,11 +32,47 @@ The finished executable is written to `bin\Release\net9.0-windows\win-x64\publis
 
 ## First run
 
-1. Close GMK DriverNet and AntiMicro.
-2. Open GMK Movement Mapper and select Set up HidHide.
-3. Select Keyboard or Controller movement and press Start movement before opening Fortnite.
+1. Leave GMK DriverNet and AntiMicro closed.
+2. Start this mapper and click **Set up HidHide**. The mapper adds itself to HidHide's allow-list and hides only the connected GMK device.
+3. Click **Start movement**, then start Fortnite. HidHide changes normally take effect immediately; reconnecting or reopening is not required.
 
-HidHide remains a separately installed signed driver. This project does not redistribute or replace it.
+The interface scales with Windows display scaling and can be resized. Key choices and deadzone changes save automatically.
+Use **Dark mode** in the header to switch themes. The choice is remembered. **Help** beside the HidHide button opens a short five-step setup guide.
+
+Version 16 adds a true tray performance state. Minimizing suspends live drawing, dashboard updates and diagnostics while the full-speed USB, mapping, output and reconnect pipeline continues; restoring resumes the same interface and running state. It also replaces the remaining native bright tab strip with a custom themed control, darkens status surfaces, improves dashboard consistency and uses the GMK Mapper name throughout the window and taskbar.
+
+## Movement modes
+
+**Keyboard movement** is the safe default while Fortnite's mixed mouse/controller input bug exists. It creates no virtual controller and outputs the selected four movement keys.
+
+**Controller movement** restores native analog movement through a virtual Xbox 360 controller. The controller is connected only after **Start movement** is clicked and is disconnected immediately by **Stop movement**, closing the app, or an output failure. Controller mode requires the signed ViGEmBus driver used by the original GMK software.
+
+Controller profiles support a configurable diagonal target from 0° to 90°, measured outward from forward. The start and width of both forward-only activation zones can be adjusted independently; the zones are drawn in purple on the live display. The default target is 71°; 76° reproduces the older GMK preset. Profiles also store stick rotation, inner and outer deadzones, anti-deadzone, a custom response curve, and the virtual Xbox button produced by the physical GMK A button.
+
+The profile is stored at `%APPDATA%\\GMKRebuild\\profile.json`. `DiagonalSnapDegrees` and `DiagonalBiasDegrees` are intentionally profile values so the diagonal behaviour can be tuned later without changing code.
+
+## Fortnite settings for joystick-like keyboard movement
+
+Keyboard mode splits the stick into **eight equal 45° sectors** (W, W+A, A, S+A, S, …). For the stick to feel like a real joystick, Fortnite must move in the *centre* of each sector for the matching key combination. Set this in Fortnite under **Keyboard Controls → Keyboard Movement** (DE: *Tastatur-Bewegung*):
+
+| Fortnite setting (DE) | Recommended |
+|---|---|
+| Use Custom Diagonals (*Angepasste Diagonalen verwenden*) | On (Off also gives 45/90/135) |
+| Forward Diagonal Angle (*Vorwärts-Diagonal-Winkel*) | **45** |
+| Sideways Angle (*Seitwärts-Winkel*) | **90** |
+| Backward Diagonal Angle (*Rückwärts-Diagonal-Winkel*) | **135** |
+
+Why: with a sideways angle of 71, pushing the stick fully left still moves you 19° forward; a backward angle of 121 makes back-diagonals 14° flatter than the stick. 45/90/135 gives equal steps between all eight directions, so the maximum error versus the physical stick is an even ±22.5°.
+
+Notes:
+
+- Keyboard mode can only produce eight directions. For truly stepless movement use **Controller movement**.
+- The 71° value belongs to the controller-mode **diagonal lock** (`ControllerDiagonalAngle`), not to Fortnite's keyboard sideways angle.
+- A 71° sideways angle for strafing is a deliberate play-style choice, not joystick-accurate movement.
+
+## Important limitation
+
+The mapper reads the same native USB reports as GMK DriverNet. The original GMK Driver must remain closed so only one program owns the USB interface.
 
 ## GMK not detected?
 

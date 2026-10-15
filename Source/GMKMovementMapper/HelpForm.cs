@@ -4,7 +4,7 @@ public sealed class HelpForm : Form
 {
     public HelpForm(bool dark)
     {
-        Text = "GMK Mapper Help & FAQ"; StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(680, 570);
+        Text = "GMK Movement Mapper Help & FAQ"; StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(680, 570);
         MinimumSize = new Size(620, 520); AutoScaleMode = AutoScaleMode.Dpi; Font = new Font("Segoe UI", 9.5F);
         var background = dark ? Color.FromArgb(11,17,27) : Color.FromArgb(242,245,249);
         var surface = dark ? Color.FromArgb(22,30,43) : Color.White;
@@ -22,6 +22,7 @@ public sealed class HelpForm : Form
             ("Why does it say Waiting for GMK?", "Connect the GMK directly, close the original driver and AntiMicro, then try again. Only one program can own the USB device."),
             ("Do I keep HidHide open?", "No. HidHide runs as a Windows driver. Its configuration app does not need to stay open."),
             ("Why does keyboard movement type letters?", "That is expected. The selected movement keys are normal keyboard output and must match your Fortnite movement binds."),
+            ("Best Fortnite diagonal settings?", "For joystick-like keyboard movement set Fortnite's Keyboard Movement to Forward Diagonal 45, Sideways 90, Backward Diagonal 135. These match the centres of the mapper's eight equal 45° sectors."),
             ("Why use Controller mode?", "It restores analog movement and custom diagonal locking. Use Keyboard mode if Fortnite is switching input methods or affecting the mouse."),
             ("What does diagonal lock range mean?", "It is the size of the two purple forward zones. Input entering either zone snaps to your chosen forward diagonal angle. Backward movement is never locked."),
             ("Why is virtual controller unavailable?", "Install or repair ViGEmBus, restart Windows, and check the Diagnostics tab."),

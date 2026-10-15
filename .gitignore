@@ -4,3 +4,5 @@ publish*/
 test-publish/
 *.user
 .vs/
+*.exe
+*.pdb

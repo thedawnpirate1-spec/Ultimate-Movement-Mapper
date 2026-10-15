@@ -37,6 +37,7 @@ public sealed class MainForm : Form
     private readonly Button _curveButton = new();
     private readonly Button _refreshDiagnosticsButton = new();
     private readonly Button _troubleshootButton = new();
+    private readonly Button _openLogButton = new();
     private readonly Button _advancedToggle = new();
     private readonly Button _dragZonesButton = new();
     private readonly ComboBox _profilePicker = new();
@@ -62,12 +63,13 @@ public sealed class MainForm : Form
     private readonly ComboBox _controllerSlotPicker = new();
     private readonly Button _refreshSlotsButton = new();
     private readonly Label _controllerSlotStatus = new();
-    private readonly Button _openLogButton = new();
     private readonly LinkLabel _updateLink = new();
     private bool _suppressSlotEvent;
     private readonly CheckBox _openWithWindows = new();
     private readonly CheckBox _autoStartMovement = new();
     private readonly CheckBox _lowLatencyMode = new();
+    private readonly CheckBox _keepMouseActive = new();
+    private const long MouseIdleNudgeMs = 3000;
     private readonly Label _diagDevice = new();
     private readonly Label _diagHidHide = new();
     private readonly Label _diagViGEm = new();
@@ -78,7 +80,6 @@ public sealed class MainForm : Form
     private readonly Label _diagCalibration = new();
     private readonly ToolTip _toolTip = new() { AutomaticDelay = 250, AutoPopDelay = 9000, ReshowDelay = 100 };
     private readonly System.Windows.Forms.Timer _diagnosticTimer = new() { Interval = 1000 };
-    private readonly System.Windows.Forms.Timer _profileSaveTimer = new() { Interval = 350 };
     private readonly ToolStripMenuItem _trayMovementItem = new("Start movement");
     private readonly ToolStripMenuItem _trayProfilesItem = new("Profiles");
     private readonly Label _dashboardDevice = new();
@@ -103,6 +104,12 @@ public sealed class MainForm : Form
     private BindingTarget? _capturing;
     private Control? _page;
     private long _lastInputTick;
+    // Updated on every read-loop pass (success or failure). The watchdog
+    // releases all keys when it goes stale, so a blocked read can't hold one.
+    private long _lastLoopTick;
+    private const long LoopStallReleaseMs = 300;
+    private int _watchdogBusy;
+    private System.Threading.Timer? _keyWatchdog;
     private double _pollingRate;
     private double _latencyMs;
     private bool _advancedVisible;
@@ -122,11 +129,11 @@ public sealed class MainForm : Form
             ? profileNames.First(n => string.Equals(n, _appSettings.LastProfileName, StringComparison.OrdinalIgnoreCase))
             : profileNames.First());
         _mappingButtons = [_forwardButton, _leftButton, _backwardButton, _rightButton, _actionButton];
-        Text = "GMK Mapper";
+        Text = "GMK Movement Mapper";
         Icon = AppBrand.CreateIcon();
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(1040, 700);
-        MinimumSize = new Size(900, 620);
+        ClientSize = new Size(1120, 820);
+        MinimumSize = new Size(980, 700);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
         BackColor = PageColor;
@@ -138,13 +145,20 @@ public sealed class MainForm : Form
         _page = BuildPage();
         Controls.Add(_page);
         KeyDown += CaptureKey;
-        FormClosing += (_, _) => { _profileSaveTimer.Stop(); _profileStore.Save(_profile); StopMapper(); _trayIcon.Visible = false; _trayIcon.Dispose(); };
+        FormClosing += (_, _) =>
+        {
+            StopMapper();
+            Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
+            _keyWatchdog?.Dispose();
+            _keyboard.ReleaseAllInputs();
+            _trayIcon.Visible = false; _trayIcon.Dispose();
+        };
         Resize += (_, _) => MinimizeToTray();
         Shown += (_, _) =>
         {
             TitleBarTheme.Apply(this, _profile.Appearance != AppearanceMode.Light);
             if (!_profile.SetupComplete) OpenSetupWizard();
-            else if (_appSettings.AutoStartMovement) _ = AutoStartWithRetryAsync();
+            else if (_appSettings.AutoStartMovement) BeginInvoke((Action)(() => StartMapper(true)));
             CheckForUpdateInBackground();
         };
         RefreshBindingButtons();
@@ -153,33 +167,10 @@ public sealed class MainForm : Form
         UpdateModeUI();
         _diagnosticTimer.Tick += (_, _) => RefreshDiagnostics();
         _diagnosticTimer.Start();
-        _profileSaveTimer.Tick += (_, _) => { _profileSaveTimer.Stop(); _profileStore.Save(_profile); };
-    }
-
-    internal void SafeShutdown()
-    {
-        _keyboard.ReleaseAllInputs();
-        _controllerOutput.Dispose();
-        _joystick.Dispose();
-    }
-
-    private async Task AutoStartWithRetryAsync()
-    {
-        for (var attempt = 0; attempt < 10 && !IsDisposed && _runCts is null; attempt++)
-        {
-            StartMapper(true);
-            if (_runCts is not null) return;
-            await Task.Delay(1000);
-        }
-        if (!IsDisposed && _runCts is null) SetConnectionState("Automatic start timed out — connect the GMK and press Start movement", false, true);
-    }
-
-    protected override void OnDpiChanged(DpiChangedEventArgs e)
-    {
-        base.OnDpiChanged(e);
-        PerformLayout();
-        _page?.PerformLayout();
-        Invalidate(true);
+        // Thread-pool timer, not the UI timer: keeps working while minimized
+        // to tray (which stops _diagnosticTimer) and while the UI thread is busy.
+        _keyWatchdog = new System.Threading.Timer(_ => ReleaseKeysIfLoopStalled(), null, 250, 250);
+        Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
     }
 
     protected override void OnActivated(EventArgs e)
@@ -194,6 +185,35 @@ public sealed class MainForm : Form
         _windowActive = false;
         _diagnosticTimer.Stop();
         base.OnDeactivate(e);
+    }
+
+    private void ReleaseKeysIfLoopStalled()
+    {
+        // The timer fires every 250 ms on the thread pool. If a release blocks
+        // (SendInput waiting on a slow keyboard hook), later ticks must not pile
+        // up behind it on the keyboard lock — one release at a time is enough.
+        if (Interlocked.Exchange(ref _watchdogBusy, 1) == 1) return;
+        try
+        {
+            if (!_keyboard.HasKeysDown) return;
+            var loopRunning = _runCts is not null;
+            if (loopRunning && Environment.TickCount64 - Interlocked.Read(ref _lastLoopTick) < LoopStallReleaseMs) return;
+            Logger.Warn(loopRunning ? "Read loop stalled — releasing held movement keys" : "Keys still held while movement is stopped — releasing");
+            _keyboard.ReleaseAllInputs();
+        }
+        finally
+        {
+            Volatile.Write(ref _watchdogBusy, 0);
+        }
+    }
+
+    private void OnSessionSwitch(object? sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        // Lock screen, user switch, remote disconnect: release before the secure desktop takes over.
+        if (e.Reason is Microsoft.Win32.SessionSwitchReason.SessionLock
+            or Microsoft.Win32.SessionSwitchReason.ConsoleDisconnect
+            or Microsoft.Win32.SessionSwitchReason.RemoteDisconnect)
+            _keyboard.ReleaseAllInputs();
     }
 
     private void ConfigureControls()
@@ -211,8 +231,9 @@ public sealed class MainForm : Form
         StyleSecondaryButton(_curveButton, "Edit curve…"); _curveButton.Size = new Size(108, 31); _curveButton.Click += (_, _) => OpenCurveEditor();
         StyleSecondaryButton(_refreshDiagnosticsButton, "Refresh diagnostics"); _refreshDiagnosticsButton.Size = new Size(150, 36); _refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
         StyleSecondaryButton(_troubleshootButton, "Troubleshoot…"); _troubleshootButton.Size = new Size(130, 36); _troubleshootButton.Click += (_, _) => OpenTroubleshooter();
+        StyleSecondaryButton(_openLogButton, "Open log file"); _openLogButton.Size = new Size(115, 36); _openLogButton.Click += (_, _) => OpenLogFile();
         StyleSecondaryButton(_advancedToggle, "Show advanced"); _advancedToggle.Size = new Size(122, 34); _advancedToggle.Click += (_, _) => ToggleAdvanced();
-        StyleSecondaryButton(_dragZonesButton, "Drag zones"); _dragZonesButton.Size = new Size(105, 26); _dragZonesButton.Click += (_, _) => ToggleZoneEditor();
+        StyleSecondaryButton(_dragZonesButton, "Drag zones"); _dragZonesButton.Size = new Size(105, 32); _dragZonesButton.Click += (_, _) => ToggleZoneEditor();
 
         StyleSecondaryButton(_modeToggle, string.Empty);
         _modeToggle.Size = new Size(280, 42);
@@ -221,7 +242,7 @@ public sealed class MainForm : Form
             if (_runCts is not null) return;
             _profile.OutputMode = _profile.OutputMode == MovementOutputMode.Keyboard
                 ? MovementOutputMode.Controller : MovementOutputMode.Keyboard;
-            ScheduleProfileSave();
+            _profileStore.Save(_profile);
             UpdateModeUI();
         };
         _modeDescription.AutoSize = true;
@@ -235,20 +256,20 @@ public sealed class MainForm : Form
         _diagonalLock.CheckedChanged += (_, _) => { _profile.ControllerDiagonalLock = _diagonalLock.Checked; _diagonalAngle.Enabled = _diagonalLock.Checked; _diagonalStart.Enabled = _diagonalLock.Checked; _diagonalWindow.Enabled = _diagonalLock.Checked; _profileStore.Save(_profile); RefreshVisualizerOverlay(); };
         _diagonalAngle.Minimum = 0; _diagonalAngle.Maximum = 90; _diagonalAngle.DecimalPlaces = 1; _diagonalAngle.Increment = 0.5M; _diagonalAngle.Width = 82;
         _diagonalAngle.Value = (decimal)Math.Clamp(_profile.ControllerDiagonalAngle, 0, 90);
-        _diagonalAngle.ValueChanged += (_, _) => { _profile.ControllerDiagonalAngle = (double)_diagonalAngle.Value; ScheduleProfileSave(); RefreshVisualizerOverlay(); };
+        _diagonalAngle.ValueChanged += (_, _) => { _profile.ControllerDiagonalAngle = (double)_diagonalAngle.Value; _profileStore.Save(_profile); RefreshVisualizerOverlay(); };
         _rotation.Minimum = -180; _rotation.Maximum = 180; _rotation.DecimalPlaces = 1; _rotation.Increment = 0.5M; _rotation.Width = 82;
         _rotation.Value = (decimal)Math.Clamp(_profile.ControllerRotation, -180, 180);
-        _rotation.ValueChanged += (_, _) => { _profile.ControllerRotation = (double)_rotation.Value; ScheduleProfileSave(); RefreshVisualizerOverlay(); };
+        _rotation.ValueChanged += (_, _) => { _profile.ControllerRotation = (double)_rotation.Value; _profileStore.Save(_profile); RefreshVisualizerOverlay(); };
         _diagonalWindow.Minimum = 0; _diagonalWindow.Maximum = 90; _diagonalWindow.DecimalPlaces = 1; _diagonalWindow.Increment = 0.5M; _diagonalWindow.Width = 82;
         _diagonalWindow.Value = (decimal)Math.Clamp(_profile.ControllerDiagonalWindow, 0, 90);
-        _diagonalWindow.ValueChanged += (_, _) => { _profile.ControllerDiagonalWindow = (double)_diagonalWindow.Value; ScheduleProfileSave(); RefreshVisualizerOverlay(); };
+        _diagonalWindow.ValueChanged += (_, _) => { _profile.ControllerDiagonalWindow = (double)_diagonalWindow.Value; _profileStore.Save(_profile); RefreshVisualizerOverlay(); };
         _diagonalStart.Minimum = 0; _diagonalStart.Maximum = 89; _diagonalStart.DecimalPlaces = 1; _diagonalStart.Increment = 0.5M; _diagonalStart.Width = 82;
         _diagonalStart.Value = (decimal)Math.Clamp(_profile.ControllerDiagonalStart, 0, 89);
-        _diagonalStart.ValueChanged += (_, _) => { _profile.ControllerDiagonalStart = (double)_diagonalStart.Value; ScheduleProfileSave(); RefreshVisualizerOverlay(); };
+        _diagonalStart.ValueChanged += (_, _) => { _profile.ControllerDiagonalStart = (double)_diagonalStart.Value; _profileStore.Save(_profile); RefreshVisualizerOverlay(); };
         _antiDeadzone.Minimum = 0; _antiDeadzone.Maximum = 95; _antiDeadzone.Width = 82; _antiDeadzone.Value = (decimal)Math.Clamp(_profile.ControllerAntiDeadzone * 100, 0, 95);
-        _antiDeadzone.ValueChanged += (_, _) => { _profile.ControllerAntiDeadzone = (double)_antiDeadzone.Value / 100; ScheduleProfileSave(); };
+        _antiDeadzone.ValueChanged += (_, _) => { _profile.ControllerAntiDeadzone = (double)_antiDeadzone.Value / 100; _profileStore.Save(_profile); };
         _outerDeadzone.Minimum = 50; _outerDeadzone.Maximum = 100; _outerDeadzone.Width = 82; _outerDeadzone.Value = (decimal)Math.Clamp(_profile.MaxZone * 100, 50, 100);
-        _outerDeadzone.ValueChanged += (_, _) => { _profile.MaxZone = (double)_outerDeadzone.Value / 100; ScheduleProfileSave(); };
+        _outerDeadzone.ValueChanged += (_, _) => { _profile.MaxZone = (double)_outerDeadzone.Value / 100; _profileStore.Save(_profile); };
         _controllerAButton.DropDownStyle = ComboBoxStyle.DropDownList; _controllerAButton.Width = 132;
         _controllerAButton.DataSource = Enum.GetValues<ControllerButtonMapping>();
         _controllerAButton.SelectedItem = _profile.ControllerAButton;
@@ -266,7 +287,6 @@ public sealed class MainForm : Form
         StyleStatusLabel(_controllerSlotStatus, "Only needed if another Xbox/XInput controller is plugged in at the same time as the GMK.");
         _toolTip.SetToolTip(_controllerSlotPicker, "Which controller slot to read the GMK from, if it shows up in Xbox-compatible mode. Leave on Automatic unless you also use a real Xbox/XInput controller at the same time.");
         RefreshControllerSlotPicker();
-        StyleSecondaryButton(_openLogButton, "Open log file"); _openLogButton.Size = new Size(115, 36); _openLogButton.Click += (_, _) => OpenLogFile();
         _linearResponse.Text = "Linear stick response"; _linearResponse.AutoSize = true; _linearResponse.Checked = _profile.ControllerLinearResponse;
         _linearResponse.CheckedChanged += (_, _) => { _profile.ControllerLinearResponse = _linearResponse.Checked; _profileStore.Save(_profile); };
 
@@ -303,7 +323,7 @@ public sealed class MainForm : Form
         {
             _profile.Appearance = _profile.Appearance switch { AppearanceMode.Light => AppearanceMode.Dark, AppearanceMode.Dark => AppearanceMode.Black, _ => AppearanceMode.Light };
             _profile.DarkMode = _profile.Appearance != AppearanceMode.Light;
-            ScheduleProfileSave();
+            _profileStore.Save(_profile);
             ApplyTheme();
         };
         StyleStatusLabel(_deviceStatus, _hidHide.IsInstalled
@@ -323,7 +343,7 @@ public sealed class MainForm : Form
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Exit", null, (_, _) => Close());
         _trayIcon.Icon = Icon;
-        _trayIcon.Text = "GMK Movement";
+        _trayIcon.Text = "GMK Movement Mapper";
         _trayIcon.ContextMenuStrip = trayMenu;
         _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
         RebuildTrayProfiles();
@@ -348,7 +368,7 @@ public sealed class MainForm : Form
         {
             _profile.Deadzone = _deadzone.Value / 100.0;
             _deadzoneValue.Text = $"{_deadzone.Value}%";
-            ScheduleProfileSave();
+            _profileStore.Save(_profile);
         };
         _deadzoneValue.Text = $"{_deadzone.Value}%";
         _deadzoneValue.AutoSize = true;
@@ -363,6 +383,11 @@ public sealed class MainForm : Form
         _lowLatencyMode.Text = "Low-latency performance mode"; _lowLatencyMode.AutoSize = true; _lowLatencyMode.Checked = _profile.LowLatencyMode;
         _lowLatencyMode.CheckedChanged += (_, _) => { _profile.LowLatencyMode = _lowLatencyMode.Checked; _profileStore.Save(_profile); };
         _toolTip.SetToolTip(_lowLatencyMode, "Reduces interface drawing frequency while keeping full-speed input and output processing.");
+        _keepMouseActive.Text = "Keep mouse active while mapping"; _keepMouseActive.AutoSize = true; _keepMouseActive.Checked = _profile.KeepMouseActive;
+        _keepMouseActive.CheckedChanged += (_, _) => { _profile.KeepMouseActive = _keepMouseActive.Checked; _profileStore.Save(_profile); };
+        _toolTip.SetToolTip(_keepMouseActive,
+            "Some games stop reading mouse look once the GMK's movement output has been active for a while without any real mouse movement. " +
+            "This nudges the mouse by a net-zero amount when that happens, so the game keeps treating the mouse as active. Invisible, only runs while movement is on.");
         _visualizer.DiagonalZoneChanged += (start, width) => BeginInvoke((Action)(() => ApplyDraggedZone(start, width)));
         AttachPreview(_deadzone, "deadzone"); AttachPreview(_deadzoneValue, "deadzone");
         AttachPreview(_diagonalLock, "diagonal"); AttachPreview(_diagonalAngle, "diagonal");
@@ -445,35 +470,17 @@ public sealed class MainForm : Form
         catch { /* opening the browser is best-effort */ }
     }
 
-    private void OpenLogFile()
-    {
-        try
-        {
-            var path = Logger.CurrentLogPath;
-            if (!File.Exists(path))
-            {
-                MessageBox.Show(this, "No log entries yet today. The log file is created the first time something worth recording happens (a connection, an error).", "No log file yet", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Could not open log file", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
     private Control BuildPage()
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = PageColor, ColumnCount = 1, RowCount = 2, Tag = "page" };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildHeader(), 0, 0);
 
         var content = new TableLayoutPanel
         {
             Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
-            Padding = new Padding(12), BackColor = PageColor, Tag = "page"
+            Padding = new Padding(18, 16, 18, 18), BackColor = PageColor, Tag = "page"
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
@@ -489,19 +496,29 @@ public sealed class MainForm : Form
 
     private Control BuildHeader()
     {
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20,29,44), Padding = new Padding(18,9,18,8), Tag = "header", ColumnCount = 4, RowCount = 1 };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58)); header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132)); header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
-        var logo = new BrandLogo { Dock = DockStyle.Fill, Margin = new Padding(0,0,8,0) };
-        var textStack = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
-        textStack.RowStyles.Add(new RowStyle(SizeType.Percent, 45)); textStack.RowStyles.Add(new RowStyle(SizeType.Percent, 30)); textStack.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
-        var title = new Label { Text = "GMK Mapper", Dock = DockStyle.Fill, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold), TextAlign = ContentAlignment.BottomLeft, Tag = "header" };
-        _subtitle = new Label { Text = $"GMK to Keyboard Movement · v{UpdateChecker.CurrentVersion.ToString(3)}", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(174,187,207), Font = new Font("Segoe UI", 8.7F), TextAlign = ContentAlignment.TopLeft, Tag = "header" };
-        _updateLink.Dock = DockStyle.Fill; _updateLink.AutoSize = false; _updateLink.Visible = false;
-        _updateLink.Font = new Font("Segoe UI Semibold", 8.3F, FontStyle.Bold); _updateLink.LinkColor = Color.FromArgb(147,197,253); _updateLink.Tag = "header";
-        textStack.Controls.Add(title,0,0); textStack.Controls.Add(_subtitle,0,1); textStack.Controls.Add(_updateLink,0,2);
-        _darkButton.Anchor = AnchorStyles.None; _runBadge.Anchor = AnchorStyles.None;
-        header.Controls.Add(logo,0,0); header.Controls.Add(textStack,1,0); header.Controls.Add(_darkButton,2,0); header.Controls.Add(_runBadge,3,0);
+        var header = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20, 29, 44), Padding = new Padding(24, 14, 24, 12), Tag = "header" };
+        var logo = new BrandLogo { Location = new Point(22, 15) };
+        var title = new Label { Text = "GMK Movement Mapper", AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold), Location = new Point(80, 10), Tag = "header" };
+        _subtitle = new Label { Text = $"GMK to Keyboard Movement · v{UpdateChecker.CurrentVersion.ToString(3)}", AutoSize = true, ForeColor = Color.FromArgb(174, 187, 207), Font = new Font("Segoe UI", 9F), Location = new Point(82, 44), Tag = "header" };
+        _updateLink.AutoSize = true;
+        _updateLink.Visible = false;
+        _updateLink.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+        _updateLink.LinkColor = Color.FromArgb(147, 197, 253);
+        _updateLink.Location = new Point(82, 62);
+        _updateLink.Tag = "header";
+        _runBadge.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _darkButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        header.Resize += (_, _) =>
+        {
+            _runBadge.Location = new Point(header.ClientSize.Width - _runBadge.Width - 24, 22);
+            _darkButton.Location = new Point(_runBadge.Left - _darkButton.Width - 12, 20);
+        };
+        header.Controls.Add(logo);
+        header.Controls.Add(title);
+        header.Controls.Add(_subtitle);
+        header.Controls.Add(_updateLink);
+        header.Controls.Add(_darkButton);
+        header.Controls.Add(_runBadge);
         return header;
     }
 
@@ -544,7 +561,7 @@ public sealed class MainForm : Form
         AddBindingRow(keyGrid, "Move backward", _backwardButton, 2); AddBindingRow(keyGrid, "Move right", _rightButton, 3);
         AddBindingRow(keyGrid, "GMK A button", _actionButton, 4);
         _keyboardSettingsPanel = keyGrid; _controllerSettingsPanel = BuildControllerSettings();
-        _settingsHost = new Panel { Dock = DockStyle.Top, Height = 205, Margin = new Padding(0) };
+        _settingsHost = new Panel { Dock = DockStyle.Top, Height = 334, Margin = new Padding(0) };
         _settingsHost.Controls.Add(_controllerSettingsPanel); _settingsHost.Controls.Add(_keyboardSettingsPanel);
         layout.Controls.Add(_settingsHost, 0, 4);
         layout.Controls.Add(SectionTitle("Deadzone"), 0, 5);
@@ -578,32 +595,38 @@ public sealed class MainForm : Form
         layout.Controls.Add(_controllerSlotStatus, 0, 9);
         layout.Controls.Add(SectionTitle("Automatic startup"), 0, 10);
         var startup = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0, 4, 0, 8) };
-        startup.Controls.Add(_openWithWindows); startup.Controls.Add(_autoStartMovement); startup.Controls.Add(_lowLatencyMode); layout.Controls.Add(startup, 0, 11);
+        startup.Controls.Add(_openWithWindows); startup.Controls.Add(_autoStartMovement); startup.Controls.Add(_lowLatencyMode); startup.Controls.Add(_keepMouseActive); layout.Controls.Add(startup, 0, 11);
         layout.Controls.Add(new Label { Text = "Automatic movement uses the selected profile. Controller mode creates the virtual controller only after movement starts.", AutoSize = true, MaximumSize = new Size(450, 0), Tag = "muted" }, 0, 12);
         page.Controls.Add(layout); return page;
     }
 
     private Control BuildControllerSettings()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, Margin = new Padding(0,3,0,6) };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 19));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 19));
-        for (var i=0;i<6;i++) panel.RowStyles.Add(new RowStyle(SizeType.Absolute,32));
-        panel.Controls.Add(_diagonalLock,0,0); panel.SetColumnSpan(_diagonalLock,4);
-        AddCompactSetting(panel,"Locked angle",_diagonalAngle,"°",0,1); AddCompactSetting(panel,"Zone starts",_diagonalStart,"°",2,1);
-        AddCompactSetting(panel,"Zone width",_diagonalWindow,"°",0,2); AddCompactSetting(panel,"Rotation",_rotation,"°",2,2);
-        AddCompactSetting(panel,"Anti-deadzone",_antiDeadzone,"%",0,3); AddCompactSetting(panel,"Outer deadzone",_outerDeadzone,"%",2,3);
-        panel.Controls.Add(new Label { Text="GMK A output",AutoSize=true,Anchor=AnchorStyles.Left,Tag="text" },0,4); panel.Controls.Add(_controllerAButton,1,4);
-        panel.Controls.Add(new Label { Text="Response curve",AutoSize=true,Anchor=AnchorStyles.Left,Tag="text" },2,4); panel.Controls.Add(_curveButton,3,4);
-        panel.Controls.Add(_linearResponse,0,5); panel.SetColumnSpan(_linearResponse,2);
-        panel.Controls.Add(_dragZonesButton,3,5);
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 3, 0, 8) };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
+        for (var i = 0; i < 11; i++) panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.Controls.Add(_diagonalLock, 0, 0); panel.SetColumnSpan(_diagonalLock, 2);
+        panel.Controls.Add(new Label { Text = "Locked diagonal angle", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 1);
+        panel.Controls.Add(UnitControl(_diagonalAngle, "°"), 1, 1);
+        panel.Controls.Add(new Label { Text = "Lock zone starts from horizontal", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 2);
+        panel.Controls.Add(UnitControl(_diagonalStart, "°"), 1, 2);
+        panel.Controls.Add(new Label { Text = "Lock zone width", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 3);
+        panel.Controls.Add(UnitControl(_diagonalWindow, "°"), 1, 3);
+        panel.Controls.Add(new Label { Text = "Stick rotation", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 4);
+        panel.Controls.Add(UnitControl(_rotation, "°"), 1, 4);
+        panel.Controls.Add(new Label { Text = "Anti-deadzone", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 5);
+        panel.Controls.Add(UnitControl(_antiDeadzone, "%"), 1, 5);
+        panel.Controls.Add(new Label { Text = "Outer deadzone", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 6);
+        panel.Controls.Add(UnitControl(_outerDeadzone, "%"), 1, 6);
+        panel.Controls.Add(new Label { Text = "GMK A button output", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 7);
+        panel.Controls.Add(_controllerAButton, 1, 7);
+        panel.Controls.Add(_linearResponse, 0, 8); panel.SetColumnSpan(_linearResponse, 2);
+        panel.Controls.Add(new Label { Text = "Response curve", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 9);
+        _curveButton.Text = "Edit curve…"; _curveButton.Size = new Size(120, 32); panel.Controls.Add(_curveButton, 1, 9);
+        panel.Controls.Add(new Label { Text = "Visual zone editor", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 10);
+        panel.Controls.Add(_dragZonesButton, 1, 10);
         return panel;
-    }
-
-    private static void AddCompactSetting(TableLayoutPanel panel, string label, NumericUpDown input, string unit, int column, int row)
-    {
-        panel.Controls.Add(new Label { Text=label,AutoSize=true,Anchor=AnchorStyles.Left,Tag="text" },column,row);
-        panel.Controls.Add(UnitControl(input,unit),column+1,row);
     }
 
     private TabPage BuildDiagnosticsTab()
@@ -748,58 +771,77 @@ public sealed class MainForm : Form
 
     private void ToggleMapper() { if (_runCts is null) StartMapper(); else StopMapper(); }
 
+    private volatile bool _startInProgress;
+
     private void StartMapper(bool quiet = false)
     {
-        var validation = ValidateConfiguration();
-        if (validation.Count > 0)
+        // See GMK Movement Mapper's MainForm.cs for the full explanation:
+        // _runCts used to only be assigned after the (blocking) device
+        // connect calls succeeded, leaving a window where a second
+        // StartMapper() call (e.g. the unguarded auto-start-on-launch call
+        // racing a manual click) could start a second polling thread and
+        // overwrite _runCts, orphaning the first thread with no way to stop
+        // it. Guarding at the very top, before any I/O, closes that window.
+        if (_runCts is not null || _startInProgress) return;
+        _startInProgress = true;
+        _startButton.Enabled = false;
+        try
         {
-            SetConnectionState(validation[0], false, true);
-            if (!quiet) MessageBox.Show(this, string.Join("\n", validation.Select(x => "• " + x)), "Check configuration", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        try { _joystick.Connect(_profile.ForcedControllerSlot); Logger.Info($"GMK connected: {_joystick.DeviceName}"); }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Connect failed: {ex.Message}");
-            SetConnectionState("GMK not connected — reconnect it and close other GMK software", false, true);
-            if (!quiet) MessageBox.Show(this, ex.Message, "Could not open GMK", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        if (_profile.OutputMode == MovementOutputMode.Controller)
-        {
-            try { _controllerOutput.Connect(); }
-            catch (Exception ex)
+            var validation = ValidateConfiguration();
+            if (validation.Count > 0)
             {
-                _joystick.Dispose();
-                if (!quiet) MessageBox.Show(this,
-                    "Controller mode could not create the virtual Xbox controller. Make sure ViGEmBus is installed, then restart the app.\n\n" + ex.Message,
-                    "Virtual controller unavailable", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetConnectionState(validation[0], false, true);
+                if (!quiet) MessageBox.Show(this, string.Join("\n", validation.Select(x => "• " + x)), "Check configuration", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-        }
+            try { _joystick.Connect(_profile.ForcedControllerSlot); Logger.Info($"GMK connected: {_joystick.DeviceName}"); }
+            catch (Exception ex)
+            {
+                Logger.Warn($"Connect failed: {ex.Message}");
+                SetConnectionState("GMK not connected — reconnect it and close other GMK software", false, true);
+                if (!quiet) MessageBox.Show(this, ex.Message, "Could not open GMK", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
 
-        _profile.Deadzone = _deadzone.Value / 100.0;
-        ScheduleProfileSave();
-        var bindings = GetBindings();
-        var mapper = new EightWayMapper(_profile);
-        var analogMapper = new AnalogStickMapper(_profile);
-        var outputMode = _profile.OutputMode;
-        _runCts = new CancellationTokenSource();
-        var runCts = _runCts;
+            if (_profile.OutputMode == MovementOutputMode.Controller)
+            {
+                try { _controllerOutput.Connect(); }
+                catch (Exception ex)
+                {
+                    _joystick.Dispose();
+                    if (!quiet) MessageBox.Show(this,
+                        "Controller mode could not create the virtual Xbox controller. Make sure ViGEmBus is installed, then restart the app.\n\n" + ex.Message,
+                        "Virtual controller unavailable", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
 
-        _runTask = Task.Factory.StartNew(() =>
-        {
+            _profile.Deadzone = _deadzone.Value / 100.0;
+            _profileStore.Save(_profile);
+            var bindings = GetBindings();
+            var mapper = new EightWayMapper(_profile);
+            var analogMapper = new AnalogStickMapper(_profile);
+            var outputMode = _profile.OutputMode;
+            var foregroundGate = new ForegroundGate(_profile.TargetProcessName);
+            _runCts = new CancellationTokenSource();
+            var runCts = _runCts;
+
+            _runTask = Task.Factory.StartNew(() =>
+            {
             Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
             var lastVisualUpdate = 0L;
             var lastSuccessfulRead = Environment.TickCount64;
             var rateStarted = Environment.TickCount64;
             var readCount = 0;
             var disconnectShown = false;
+            MouseKeepAlive.TryGetCursorPos(out var lastCursorPos);
+            var lastCursorMoveTick = Environment.TickCount64;
+            var lastNudgeTick = 0L;
             try
             {
                 while (!runCts.IsCancellationRequested)
                 {
+                    Interlocked.Exchange(ref _lastLoopTick, Environment.TickCount64);
                     if (!_joystick.TryRead(out var x, out var y, out var aPressed))
                     {
                         _keyboard.ReleaseAllInputs();
@@ -850,12 +892,37 @@ public sealed class MainForm : Form
                     else
                     {
                         movement = mapper.Map(new StickSample(x, y));
-                        _keyboard.Apply(movement, bindings.Forward, bindings.Left, bindings.Backward, bindings.Right);
-                        _keyboard.ApplyAction(bindings.Action, aPressed);
+                        if (foregroundGate.IsTargetFocused())
+                        {
+                            _keyboard.Apply(movement, bindings.Forward, bindings.Left, bindings.Backward, bindings.Right);
+                            _keyboard.ApplyAction(bindings.Action, aPressed);
+                        }
+                        else
+                        {
+                            // Game not focused: never type movement keys into other windows.
+                            _keyboard.ReleaseAllInputs();
+                            movement = MovementKeys.None;
+                        }
                     }
                     var processingMs = System.Diagnostics.Stopwatch.GetElapsedTime(processingStarted).TotalMilliseconds;
                     _latencyMs = _latencyMs == 0 ? processingMs : _latencyMs * 0.92 + processingMs * 0.08;
                     var now = Environment.TickCount64;
+
+                    if (_profile.KeepMouseActive && MouseKeepAlive.TryGetCursorPos(out var cursorPos))
+                    {
+                        if (cursorPos.X != lastCursorPos.X || cursorPos.Y != lastCursorPos.Y)
+                        {
+                            lastCursorPos = cursorPos;
+                            lastCursorMoveTick = now;
+                        }
+                        else if ((movement.Forward || movement.Left || movement.Backward || movement.Right)
+                                 && now - lastCursorMoveTick > MouseIdleNudgeMs && now - lastNudgeTick > MouseIdleNudgeMs)
+                        {
+                            MouseKeepAlive.Nudge();
+                            lastNudgeTick = now;
+                        }
+                    }
+
                     if (_trayPerformanceMode || !_windowActive) continue;
                     var visualInterval = _profile.LowLatencyMode ? 50 : 16;
                     if (now - lastVisualUpdate < visualInterval) continue;
@@ -865,6 +932,7 @@ public sealed class MainForm : Form
             }
             catch (Exception ex)
             {
+                Logger.Error("Movement loop stopped", ex);
                 _keyboard.ReleaseAllInputs();
                 if (!IsDisposed) BeginInvoke((Action)(() =>
                 {
@@ -874,9 +942,15 @@ public sealed class MainForm : Form
                 }));
             }
             finally { _keyboard.ReleaseAllInputs(); }
-        }, runCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        SetConnectionState("GMK connected", true, false);
-        SetRunningState(true);
+            }, runCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            SetConnectionState("GMK connected", true, false);
+            SetRunningState(true);
+        }
+        finally
+        {
+            _startInProgress = false;
+            _startButton.Enabled = true;
+        }
     }
 
     private void StopMapper()
@@ -1042,6 +1116,7 @@ public sealed class MainForm : Form
         _antiDeadzone.Value = (decimal)Math.Clamp(_profile.ControllerAntiDeadzone * 100, 0, 95);
         _outerDeadzone.Value = (decimal)Math.Clamp(_profile.MaxZone * 100, 50, 100);
         _lowLatencyMode.Checked = _profile.LowLatencyMode;
+        _keepMouseActive.Checked = _profile.KeepMouseActive;
         _rotation.Value = (decimal)Math.Clamp(_profile.ControllerRotation, -180, 180);
         _controllerAButton.SelectedItem = _profile.ControllerAButton;
         _linearResponse.Checked = _profile.ControllerLinearResponse;
@@ -1061,7 +1136,7 @@ public sealed class MainForm : Form
             : "Outputs keyboard keys and keeps Fortnite from seeing controller movement. Recommended while the current Fortnite bug exists.";
         if (_keyboardSettingsPanel is not null) _keyboardSettingsPanel.Visible = !controller;
         if (_controllerSettingsPanel is not null) _controllerSettingsPanel.Visible = controller && _advancedVisible;
-        if (_settingsHost is not null) _settingsHost.Height = controller ? (_advancedVisible ? 205 : 0) : 185;
+        if (_settingsHost is not null) _settingsHost.Height = controller ? (_advancedVisible ? 334 : 0) : 200;
         _advancedToggle.Visible = controller;
         _dragZonesButton.Enabled = controller && _runCts is null;
         _outputCaption.Text = controller ? "Controller output" : "Keyboard output";
@@ -1100,13 +1175,7 @@ public sealed class MainForm : Form
         _profile.ControllerDiagonalWindow = Math.Clamp(width, 0, 90);
         _diagonalStart.Value = (decimal)_profile.ControllerDiagonalStart;
         _diagonalWindow.Value = (decimal)_profile.ControllerDiagonalWindow;
-        ScheduleProfileSave();
-    }
-
-    private void ScheduleProfileSave()
-    {
-        _profileSaveTimer.Stop();
-        _profileSaveTimer.Start();
+        _profileStore.Save(_profile);
     }
 
     private List<string> ValidateConfiguration()
@@ -1199,6 +1268,24 @@ public sealed class MainForm : Form
         form.ShowDialog(this);
     }
 
+    private void OpenLogFile()
+    {
+        try
+        {
+            var path = Logger.CurrentLogPath;
+            if (!File.Exists(path))
+            {
+                MessageBox.Show(this, "No log entries yet today. The log file is created the first time something worth recording happens (a connection, an error).", "No log file yet", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Could not open log file", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private string? PromptForProfileName()
     {
         using var prompt = new Form { Text = "New profile", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(390, 150), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
@@ -1229,7 +1316,7 @@ public sealed class MainForm : Form
         _trayPerformanceMode = true;
         _diagnosticTimer.Stop();
         _trayIcon.Visible = true;
-        _trayIcon.Text = _runCts is null ? "GMK Mapper — ready" : $"GMK Mapper — {_profile.OutputMode} movement active";
+        _trayIcon.Text = _runCts is null ? "GMK Movement Mapper — ready" : $"GMK Movement Mapper — {_profile.OutputMode} movement active";
         Hide();
     }
 

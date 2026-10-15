@@ -66,6 +66,7 @@ public static class XInputSource
     // This floor caps how often a new native call is even attempted per slot,
     // regardless of caller frequency.
     private static readonly TimeSpan MinRefreshInterval = TimeSpan.FromMilliseconds(4);
+    private static readonly TimeSpan MaxStateAge = TimeSpan.FromMilliseconds(250);
 
     private static readonly object Lock = new();
     private static readonly Task?[] InFlight = new Task?[SlotCount];
@@ -133,7 +134,12 @@ public static class XInputSource
     public static bool TryRead(int index, out double x, out double y, out bool aPressed)
     {
         var (error, state) = Poll(index);
-        if (error != ErrorSuccess)
+        DateTime lastUpdated;
+        lock (Lock) lastUpdated = LastUpdated[index];
+        // A hung XInputGetState leaves the last cached state in place. Reporting
+        // that as fresh would keep a deflected stick (and its key) held forever,
+        // so stale data counts as a failed read and the caller releases output.
+        if (error != ErrorSuccess || DateTime.UtcNow - lastUpdated > MaxStateAge)
         {
             x = y = 0;
             aPressed = false;

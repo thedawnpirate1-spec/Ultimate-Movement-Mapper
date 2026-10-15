@@ -23,9 +23,7 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var form = new MainForm();
-        try { Application.Run(form); }
-        finally { form.SafeShutdown(); }
+        Application.Run(new MainForm());
 
         Logger.Info("GMK Mapper exited normally");
     }
@@ -35,6 +33,6 @@ internal static class Program
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindow(string? className, string windowName);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
-        public static void Activate() { var window = FindWindow(null, "GMK Mapper"); if (window == IntPtr.Zero) return; ShowWindow(window, 9); SetForegroundWindow(window); }
+        public static void Activate() { var window = FindWindow(null, "GMK Movement Mapper"); if (window == IntPtr.Zero) return; ShowWindow(window, 9); SetForegroundWindow(window); }
     }
 }

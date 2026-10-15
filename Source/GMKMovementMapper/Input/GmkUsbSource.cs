@@ -29,6 +29,9 @@ public sealed class GmkUsbSource : IDisposable
     private const int JoystickL3ProductId = 0x5751;
     private const int InterfaceNumber = 0;
     private const int ReportLength = 13;
+    // LibUsbDotNet treats a timeout of 0 as "wait forever": a stick that stops
+    // sending reports would freeze the read loop with keys held down.
+    private const int ReadTimeoutMs = 100;
 
     private static readonly TimeSpan ScanWait = TimeSpan.FromMilliseconds(400);
     private static readonly TimeSpan ScanCooldown = TimeSpan.FromSeconds(20);
@@ -165,7 +168,7 @@ public sealed class GmkUsbSource : IDisposable
         if (_reader is not null)
         {
             var report = new byte[ReportLength];
-            var error = _reader.Read(report, 0, out var bytesRead);
+            var error = _reader.Read(report, ReadTimeoutMs, out var bytesRead);
             if (error != Error.Success || bytesRead != ReportLength) return false;
 
             // Byte 0 is the report ID. The original driver copies bytes 1..12,

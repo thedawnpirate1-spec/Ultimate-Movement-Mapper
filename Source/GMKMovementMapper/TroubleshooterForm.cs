@@ -6,7 +6,7 @@ public sealed class TroubleshooterForm : Form
 {
     public TroubleshooterForm(bool hidHide, bool vigem, bool connected, MovementOutputMode mode, bool dark)
     {
-        Text = "GMK Mapper Troubleshooting Assistant"; StartPosition = FormStartPosition.CenterParent;
+        Text = "GMK Movement Mapper Troubleshooting Assistant"; StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(690, 570); MinimumSize = new Size(620, 500); Font = new Font("Segoe UI", 9.5F);
         var surface = dark ? Color.FromArgb(22,30,43) : Color.White;
         var text = dark ? Color.FromArgb(235,241,249) : Color.FromArgb(28,37,51);

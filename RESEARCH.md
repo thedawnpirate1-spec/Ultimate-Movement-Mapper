@@ -1,27 +1,28 @@
-# Original GMK research and lessons applied
+# Findings and implementation choice
 
-## What the supplied 1.0.5-alpha archive contains
+## Existing GMK build
 
-The supplied `GMK-Driver-1.0.5-alpha.zip` is not an application source archive. It contains the public README, `.gitignore`, Inno Setup installer scripts and a ViGEm notice. The installer script packages an already-built `dist` folder, installs under Local AppData and explicitly supplies the application's working directory. The executable installer was inspected as an artifact and was not run.
+The public repository [TannerHollis/GMKDriverNet](https://github.com/TannerHollis/GMKDriverNet) is the source that corresponds to the installed `GMKDriverNetUI.exe` family. Its driver code identifies GMK VID `0x0483` and joystick PIDs `0x5750` and `0x5751`, scans with `LibUsbDotNet.LibUsb`, and creates its output through `Nefarius.ViGEm.Client`. The published version string in `GMKDriver.cs` is `v0.95.7`.
 
-The current official [gamingmodkits/GMK-Driver](https://github.com/gamingmodkits/GMK-Driver) default branch likewise exposes its installer directory and README, rather than the C# application implementation behind the 1.0.5-alpha binary. Its README confirms the ViGEm dependency and mentions a previous crash caused by an incorrect working directory.
+That architecture explains the Fortnite behaviour: the app owns the physical USB joystick and publishes an Xbox 360/XInput device. Fortnite can see the virtual controller while the mouse is also active, so its input-method switching logic is involved. The old app also polls USB device counts and starts one worker thread per GMK device, which is more fragile than a single bounded polling loop.
 
-An older public implementation, [TannerHollis/GMKDriverNet](https://github.com/TannerHollis/GMKDriverNet), explains the core architecture: GMK VID `0x0483`, joystick PIDs `0x5750` and `0x5751`, USB input through LibUsbDotNet, and virtual Xbox output through Nefarius ViGEm.
+## Rebuild choice
 
-## The 1.0.5-alpha performance note
+The replacement in this folder intentionally does not create a ViGEm controller. It reads the joystick through Windows' joystick API and emits only W/A/S/D with `SendInput`. That gives Fortnite one movement input family (keyboard) and leaves the mouse independent.
 
-The supplied release screenshot describes three useful changes: disable ViGEm automatic report submission, submit one complete report for each changed state, skip unchanged mapped reports, and pause live HUD timers while the UI is inactive.
+The mapper is separated from the device reader. If a GMK firmware revision is not exposed by the Windows joystick API, only `WinmmJoystickSource` needs to be replaced by a Raw Input/HIDP reader; the eight-way and keyboard code remains unchanged.
 
-That issue did apply to the earlier Controller mode in this project. With `AutoSubmitReport = true`, setting two axes and several button states could cause several virtual-bus reports for one physical GMK sample. Version 17 now sets `AutoSubmitReport = false`, compares the complete quantized output with the last report, and calls `SubmitReport()` exactly once only after a change. Stopping movement sends one neutral report before disconnecting the virtual controller.
+## Diagonal model
 
-Keyboard mode did not have the problem: it already emits a key event only when the requested pressed/released state changes. Version 17 also pauses diagnostics and live drawing whenever the window is inactive or minimized. The USB reader, movement mapping, keyboard output, controller output and reconnect recovery remain active.
+The mapper uses eight sectors. `DiagonalSnapDegrees` controls how close the stick must be to a diagonal before the diagonal wins. `DiagonalBiasDegrees` shifts the four diagonal centers, allowing the behaviour to be tuned later without changing code. `Balanced` gives the usual 22.5-degree split; `CardinalFirst`, `DiagonalFirst`, and `Custom` are available for testing.
 
-## Other lessons retained
+## HidHide boundary
 
-- Direct USB ownership remains exclusive, so the original GMK program must be closed while this mapper is running.
-- The virtual Xbox device exists only while Controller movement is started and is removed when movement stops or the app exits.
-- Keyboard movement creates no virtual controller.
-- HidHide remains a separately installed, signed system driver. The mapper configures its supported command-line interface rather than repackaging an unsigned copy.
-- Profiles are normalized before use so corrupt or older settings cannot place deadzones, angles or calibration outside supported ranges.
+HidHide is a signed kernel-mode filter, so it should not be copied into an application or replaced by a newly built unsigned filter. The app invokes the installed `HidHideCLI.exe` to add its own executable to the allow-list, block the current GMK instance, and enable hiding. This uses the documented HidHide control surface. The installed HidHide driver still runs independently and does not require the configuration window to remain open.
 
-No original 1.0.5-alpha application code was copied into this project.
+References:
+
+- [GMKDriverNet source](https://github.com/TannerHollis/GMKDriverNet)
+- [HidHide API documentation](https://docs.nefarius.at/projects/HidHide/API-Documentation/)
+- [HidHide CLI/API documentation](https://docs.nefarius.at/projects/HidHide/API-Documentation/)
+- [HidHide simple setup guide](https://docs.nefarius.at/projects/HidHide/Simple-Setup-Guide/)
