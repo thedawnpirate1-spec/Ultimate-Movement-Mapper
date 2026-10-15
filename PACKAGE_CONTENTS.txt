@@ -1,9 +1,10 @@
-GMK Movement Mapper v17
+Ultimate Joystick Mapper v17.2
 
-Program\GMKMovementMapper.exe   Self-contained Windows x64 application
-Source\GMKMovementMapper\       Complete clean-room source project
-README.md                        Setup, build and usage guide
-RESEARCH.md                      Original-repository findings and applied lessons
+UltimateJoystickMapper.exe              Self-contained Windows x64 application (Releases page)
+Source\UltimateJoystickMapper\          Complete clean-room source project
+README.md                                Setup, build, usage and Fortnite settings guide
+RESEARCH.md                              Original-repository findings and applied lessons
+XBOX_FALLBACK_GUIDE.md                   Detection help for Xbox-compatible GMK revisions
 
 The package does not contain saved profiles, device instance IDs, user paths,
 debug symbols, build caches, or the supplied original GMK installer/archive.

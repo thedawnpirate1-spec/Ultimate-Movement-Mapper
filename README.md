@@ -1,4 +1,4 @@
-# GMK Movement Mapper
+# Ultimate Joystick Mapper
 
 This is a clean-room replacement for the old GMK DriverNet user-mode app. It is deliberately split into three pieces:
 
@@ -12,7 +12,7 @@ The public GMK source confirms that the original app used VID `0483`, joystick P
 
 ## Installation
 
-1. **Download** `GMKMovementMapper.exe` from the [Releases page](https://github.com/thedawnpirate1-spec/GMK-Movement-Mapper/releases). It is a single, self-contained Windows x64 executable — no installer, no separate .NET runtime, no Visual Studio.
+1. **Download** `UltimateJoystickMapper.exe` from the [Releases page](https://github.com/thedawnpirate1-spec/Ultimate-Joystick-Mapper/releases). It is a single, self-contained Windows x64 executable — no installer, no separate .NET runtime, no Visual Studio.
 2. **Put it anywhere** you like (Desktop, a Programs folder, wherever). Nothing needs to be extracted or installed alongside it.
 3. **First launch — Windows SmartScreen warning is expected.** Because this is an independent, unsigned build, Windows shows *"Windows protected your PC"* the first time you run it. Click **More info**, then **Run anyway**. This is normal for small open-source tools without a paid code-signing certificate; it is not a sign of a virus, and you can verify that yourself by building from source (see below) or reading the code in `Source/`.
 4. **(Optional) Install [HidHide](https://docs.nefarius.at/projects/HidHide/Simple-Setup-Guide/)** if you want the app to hide the physical GMK from games like Fortnite so only the mapped keyboard/controller input is seen. Not required for basic movement mapping to work.
@@ -23,12 +23,12 @@ The public GMK source confirms that the original app used VID `0483`, joystick P
 Requires the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 
 ```bash
-git clone https://github.com/thedawnpirate1-spec/GMK-Movement-Mapper.git
-cd GMK-Movement-Mapper/Source/GMKMovementMapper
-dotnet publish GMKMovementMapper.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+git clone https://github.com/thedawnpirate1-spec/Ultimate-Joystick-Mapper.git
+cd Ultimate-Joystick-Mapper/Source/UltimateJoystickMapper
+dotnet publish UltimateJoystickMapper.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
-The finished executable is written to `bin\Release\net9.0-windows\win-x64\publish\GMKMovementMapper.exe`.
+The finished executable is written to `bin\Release\net9.0-windows\win-x64\publish\UltimateJoystickMapper.exe`.
 
 ## First run
 
@@ -39,7 +39,7 @@ The finished executable is written to `bin\Release\net9.0-windows\win-x64\publis
 The interface scales with Windows display scaling and can be resized. Key choices and deadzone changes save automatically.
 Use **Dark mode** in the header to switch themes. The choice is remembered. **Help** beside the HidHide button opens a short five-step setup guide.
 
-Version 16 adds a true tray performance state. Minimizing suspends live drawing, dashboard updates and diagnostics while the full-speed USB, mapping, output and reconnect pipeline continues; restoring resumes the same interface and running state. It also replaces the remaining native bright tab strip with a custom themed control, darkens status surfaces, improves dashboard consistency and uses the GMK Mapper name throughout the window and taskbar.
+Version 16 adds a true tray performance state. Minimizing suspends live drawing, dashboard updates and diagnostics while the full-speed USB, mapping, output and reconnect pipeline continues; restoring resumes the same interface and running state. It also replaces the remaining native bright tab strip with a custom themed control, darkens status surfaces, improves dashboard consistency and uses one app name throughout the window and taskbar.
 
 ## Movement modes
 

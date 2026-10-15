@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <!-- Windows 10 19045 has a .NET 9 CET/shadow-stack startup regression. -->
+    <CETCompat>false</CETCompat>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>UltimateJoystickMapper</AssemblyName>
+    <RootNamespace>UltimateJoystickMapper</RootNamespace>
+    <Product>Ultimate Joystick Mapper</Product>
+    <Version>17.2.0</Version>
+    <AssemblyVersion>17.2.0.0</AssemblyVersion>
+    <FileVersion>17.2.0.0</FileVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LibUsbDotNet" Version="3.0.102-alpha" />
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.232" />
+  </ItemGroup>
+
+</Project>
