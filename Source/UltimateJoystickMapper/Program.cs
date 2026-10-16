@@ -20,6 +20,17 @@ internal static class Program
 
         Logger.Info("Ultimate Joystick Mapper starting");
 
+        // Must run before MainForm connects to the GMK, otherwise HidHide still hides it.
+        try
+        {
+            if (new HidHide.HidHideBridge().EnsureMapperAllowed())
+                Logger.Info($"Added {Environment.ProcessPath} to the HidHide allow-list");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not check the HidHide allow-list", ex);
+        }
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

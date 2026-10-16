@@ -51,6 +51,22 @@ public sealed class HidHideBridge
         RunCli("--cloak-on");
     }
 
+    // HidHide allow-lists by full executable path, so every new version in a new
+    // folder would otherwise see the GMK hidden and fall back to another device.
+    // Returns true when the current executable had to be added.
+    public bool EnsureMapperAllowed()
+    {
+        if (!IsInstalled) return false;
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable)) return false;
+
+        var allowed = RunCli("--app-list");
+        if (allowed.Contains($"\"{executable}\"", StringComparison.OrdinalIgnoreCase)) return false;
+
+        RunCli("--app-reg", executable);
+        return true;
+    }
+
     public void SetActive(bool active) => RunCli(active ? "--cloak-on" : "--cloak-off");
 
     private static string RunCli(params string[] arguments)
