@@ -70,6 +70,12 @@ Notes:
 - The 71° value belongs to the controller-mode **diagonal lock** (`ControllerDiagonalAngle`), not to Fortnite's keyboard sideways angle.
 - A 71° sideways angle for strafing is a deliberate play-style choice, not joystick-accurate movement.
 
+## Tweaks tab
+
+**Faster key repeat (Windows Filter Keys)** shortens the key-repeat delay and speeds up the repeat rate beyond what the normal Windows keyboard settings allow (defaults 150 ms delay, 15 ms between repeats). It affects your physical keyboard only; the mapper's movement keys are held without repeat. The change is session-only and Windows' original values are restored when you switch it off or close the mapper.
+
+The Diagnostics tab shows the stick's measured USB read rate in Hz. The mapper does not install USB overclocking drivers such as hidusbf: they are unsigned kernel drivers and risky with Easy Anti-Cheat.
+
 ## Important limitation
 
 The mapper reads the same native USB reports as GMK DriverNet. The original GMK Driver must remain closed so only one program owns the USB interface.

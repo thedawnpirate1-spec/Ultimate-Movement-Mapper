@@ -6,6 +6,11 @@ public sealed class ApplicationSettings
 {
     public string LastProfileName { get; set; } = "Default";
     public bool AutoStartMovement { get; set; }
+    public bool FilterKeysEnabled { get; set; }
+    public int FilterKeysDelayMs { get; set; } = 150;
+    public int FilterKeysRepeatMs { get; set; } = 15;
+    // Windows' own values before the tweak was first switched on, restored when it is switched off.
+    public Tweaks.FilterKeysState? FilterKeysOriginal { get; set; }
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GMKRebuild", "app-settings.json");

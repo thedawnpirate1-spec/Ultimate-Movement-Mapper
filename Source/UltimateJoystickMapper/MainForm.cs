@@ -4,6 +4,7 @@ using UltimateJoystickMapper.HidHide;
 using UltimateJoystickMapper.Input;
 using UltimateJoystickMapper.Mapping;
 using UltimateJoystickMapper.Output;
+using UltimateJoystickMapper.Tweaks;
 
 namespace UltimateJoystickMapper;
 
@@ -69,6 +70,10 @@ public sealed class MainForm : Form
     private readonly CheckBox _autoStartMovement = new();
     private readonly CheckBox _lowLatencyMode = new();
     private readonly CheckBox _keepMouseActive = new();
+    private readonly CheckBox _filterKeysEnabled = new();
+    private readonly NumericUpDown _filterKeysDelay = new();
+    private readonly NumericUpDown _filterKeysRepeat = new();
+    private readonly Label _filterKeysStatus = new();
     private const long MouseIdleNudgeMs = 3000;
     private readonly Label _diagDevice = new();
     private readonly Label _diagHidHide = new();
@@ -151,6 +156,7 @@ public sealed class MainForm : Form
             Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
             _keyWatchdog?.Dispose();
             _keyboard.ReleaseAllInputs();
+            if (_appSettings.FilterKeysEnabled) RestoreFilterKeys(forgetOriginal: false);
             _trayIcon.Visible = false; _trayIcon.Dispose();
         };
         Resize += (_, _) => MinimizeToTray();
@@ -294,6 +300,23 @@ public sealed class MainForm : Form
         _openWithWindows.CheckedChanged += (_, _) => { try { StartupManager.SetEnabled(_openWithWindows.Checked); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "Startup setting", MessageBoxButtons.OK, MessageBoxIcon.Error); } };
         _autoStartMovement.Text = "Start movement automatically"; _autoStartMovement.AutoSize = true; _autoStartMovement.Checked = _appSettings.AutoStartMovement;
         _autoStartMovement.CheckedChanged += (_, _) => { _appSettings.AutoStartMovement = _autoStartMovement.Checked; _appSettings.Save(); };
+
+        _filterKeysEnabled.Text = "Faster key repeat (Windows Filter Keys)"; _filterKeysEnabled.AutoSize = true; _filterKeysEnabled.Checked = _appSettings.FilterKeysEnabled;
+        _filterKeysDelay.Minimum = 0; _filterKeysDelay.Maximum = 1000; _filterKeysDelay.Increment = 10; _filterKeysDelay.Width = 82;
+        _filterKeysDelay.Value = Math.Clamp(_appSettings.FilterKeysDelayMs, 0, 1000);
+        _filterKeysRepeat.Minimum = 1; _filterKeysRepeat.Maximum = 500; _filterKeysRepeat.Width = 82;
+        _filterKeysRepeat.Value = Math.Clamp(_appSettings.FilterKeysRepeatMs, 1, 500);
+        _filterKeysStatus.AutoSize = true; _filterKeysStatus.MaximumSize = new Size(450, 0); _filterKeysStatus.Tag = "muted";
+        _filterKeysEnabled.CheckedChanged += (_, _) =>
+        {
+            _appSettings.FilterKeysEnabled = _filterKeysEnabled.Checked; _appSettings.Save();
+            if (_filterKeysEnabled.Checked) ApplyFilterKeys(); else RestoreFilterKeys(forgetOriginal: true);
+        };
+        _filterKeysDelay.ValueChanged += (_, _) => { _appSettings.FilterKeysDelayMs = (int)_filterKeysDelay.Value; _appSettings.Save(); if (_filterKeysEnabled.Checked) ApplyFilterKeys(); };
+        _filterKeysRepeat.ValueChanged += (_, _) => { _appSettings.FilterKeysRepeatMs = (int)_filterKeysRepeat.Value; _appSettings.Save(); if (_filterKeysEnabled.Checked) ApplyFilterKeys(); };
+        _toolTip.SetToolTip(_filterKeysDelay, "Time a key must be held before it starts repeating. Windows' normal minimum is 250 ms.");
+        _toolTip.SetToolTip(_filterKeysRepeat, "Time between repeated key presses while a key is held. Lower is faster.");
+        if (_filterKeysEnabled.Checked) ApplyFilterKeys(); else RefreshFilterKeysStatus();
         _toolTip.SetToolTip(_diagonalStart, "Where each forward lock zone begins, measured upward from the horizontal centre line.");
         _toolTip.SetToolTip(_diagonalWindow, "Width of each purple forward lock zone.");
         _toolTip.SetToolTip(_antiDeadzone, "Minimum virtual-stick output after leaving the centre deadzone.");
@@ -535,6 +558,7 @@ public sealed class MainForm : Form
         var tabs = new ModernTabControl { Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 6) };
         tabs.TabPages.Add(BuildMovementTab());
         tabs.TabPages.Add(BuildSetupTab());
+        tabs.TabPages.Add(BuildTweaksTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
         layout.Controls.Add(tabs, 0, 1);
         _startButton.Dock = DockStyle.Fill;
@@ -600,6 +624,81 @@ public sealed class MainForm : Form
         page.Controls.Add(layout); return page;
     }
 
+    private TabPage BuildTweaksTab()
+    {
+        var page = new TabPage("Tweaks") { Padding = new Padding(14), Tag = "card" };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        for (var i = 0; i < 5; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(SectionTitle("Keyboard repeat"), 0, 0);
+        layout.Controls.Add(_filterKeysEnabled, 0, 1);
+        var values = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 6, 0, 6) };
+        values.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230)); values.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        values.Controls.Add(new Label { Text = "Repeat delay", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 0);
+        values.Controls.Add(UnitControl(_filterKeysDelay, "ms"), 1, 0);
+        values.Controls.Add(new Label { Text = "Repeat rate (time between repeats)", AutoSize = true, Anchor = AnchorStyles.Left, Tag = "text", ForeColor = TextColor }, 0, 1);
+        values.Controls.Add(UnitControl(_filterKeysRepeat, "ms"), 1, 1);
+        layout.Controls.Add(values, 0, 2);
+        layout.Controls.Add(_filterKeysStatus, 0, 3);
+        layout.Controls.Add(new Label
+        {
+            Text = "Affects your physical keyboard only (for example faster edits and repeated build keys). " +
+                   "Mapper movement keys are held without repeat and are not changed. Windows' original values " +
+                   "are restored when you switch this off or close the mapper.",
+            AutoSize = true, MaximumSize = new Size(450, 0), Tag = "muted", Margin = new Padding(0, 8, 0, 0)
+        }, 0, 4);
+        page.Controls.Add(layout); return page;
+    }
+
+    private void ApplyFilterKeys()
+    {
+        try
+        {
+            if (_appSettings.FilterKeysOriginal is null)
+            {
+                _appSettings.FilterKeysOriginal = FilterKeysTweak.Read();
+                _appSettings.Save();
+            }
+            FilterKeysTweak.Apply(_appSettings.FilterKeysDelayMs, _appSettings.FilterKeysRepeatMs);
+            Logger.Info($"Filter Keys on: delay {_appSettings.FilterKeysDelayMs} ms, repeat {_appSettings.FilterKeysRepeatMs} ms");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not apply Filter Keys", ex);
+        }
+        RefreshFilterKeysStatus();
+    }
+
+    private void RestoreFilterKeys(bool forgetOriginal)
+    {
+        if (_appSettings.FilterKeysOriginal is not { } original) { RefreshFilterKeysStatus(); return; }
+        try
+        {
+            FilterKeysTweak.Restore(original);
+            Logger.Info("Filter Keys restored to the Windows values");
+            if (forgetOriginal) { _appSettings.FilterKeysOriginal = null; _appSettings.Save(); }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not restore Filter Keys", ex);
+        }
+        RefreshFilterKeysStatus();
+    }
+
+    private void RefreshFilterKeysStatus()
+    {
+        try
+        {
+            var state = FilterKeysTweak.Read();
+            _filterKeysStatus.Text = FilterKeysTweak.IsOn(state)
+                ? $"Windows now: Filter Keys on — delay {state.DelayMs} ms, repeat every {state.RepeatMs} ms"
+                : "Windows now: Filter Keys off (normal keyboard repeat)";
+        }
+        catch (Exception ex)
+        {
+            _filterKeysStatus.Text = "Windows Filter Keys state could not be read: " + ex.Message;
+        }
+    }
+
     private Control BuildControllerSettings()
     {
         var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 3, 0, 8) };
@@ -643,6 +742,17 @@ public sealed class MainForm : Form
         actions.Controls.Add(_refreshDiagnosticsButton); actions.Controls.Add(_troubleshootButton); actions.Controls.Add(_openLogButton); layout.Controls.Add(actions, 1, 9);
         page.Controls.Add(layout); RefreshDiagnostics(); return page;
     }
+
+    // The read loop counts reports actually received, so the value sits a little below
+    // the nominal USB interval; the bands leave room for that.
+    private static string PollingRateClass(double hz) => hz switch
+    {
+        < 90 => "below standard USB",
+        < 200 => "standard USB, about 125 Hz",
+        < 400 => "about 250 Hz",
+        < 750 => "about 500 Hz",
+        _ => "about 1000 Hz or more"
+    };
 
     private static void AddDiagnosticRow(TableLayoutPanel layout, string caption, Label value, int row)
     {
@@ -1247,7 +1357,7 @@ public sealed class MainForm : Form
         _diagViGEm.Text = vigem ? "Installed" : "Not detected — required for Controller mode";
         _diagOutput.Text = _runCts is null ? "Stopped" : _profile.OutputMode == MovementOutputMode.Controller ? "Virtual Xbox controller active" : "Keyboard movement active";
         var age = _lastInputTick == 0 ? 0 : Environment.TickCount64 - _lastInputTick;
-        _diagRate.Text = _runCts is null ? "Not measuring" : age > 1000 ? "No recent input reports" : $"{_pollingRate:0} reports/second";
+        _diagRate.Text = _runCts is null ? "Not measuring" : age > 1000 ? "No recent input reports" : $"{_pollingRate:0} Hz ({PollingRateClass(_pollingRate)})";
         _diagLatency.Text = _runCts is null ? "Start movement to measure" : age > 1000 ? "No recent reports" : $"{_latencyMs:0.000} ms average processing time";
         var xRange = _profile.MaxX - _profile.MinX; var yRange = _profile.MaxY - _profile.MinY;
         var centerOffset = Math.Max(Math.Abs(_profile.CenterX), Math.Abs(_profile.CenterY));
