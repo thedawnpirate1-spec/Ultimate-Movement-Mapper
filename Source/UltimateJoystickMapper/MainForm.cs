@@ -1339,12 +1339,30 @@ public sealed class MainForm : Form
         button.Focus();
     }
 
+    // Arrow keys, Tab and Enter are dialog keys: WinForms uses them to move focus
+    // between buttons before KeyDown ever fires, so they are captured here instead.
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_capturing is not null)
+        {
+            ApplyCapturedKey(keyData & Keys.KeyCode);
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     private void CaptureKey(object? sender, KeyEventArgs e)
     {
-        if (_capturing is not { } target) return;
+        if (_capturing is null) return;
         e.Handled = true;
         e.SuppressKeyPress = true;
-        if (e.KeyCode != Keys.Escape) SetProfileKey(target, e.KeyCode);
+        ApplyCapturedKey(e.KeyCode);
+    }
+
+    private void ApplyCapturedKey(Keys key)
+    {
+        if (_capturing is not { } target) return;
+        if (key != Keys.Escape) SetProfileKey(target, key);
         _capturing = null;
         _profileStore.Save(_profile);
         RefreshBindingButtons();
@@ -1466,6 +1484,7 @@ public sealed class MainForm : Form
         Keys.Oemcomma => ",", Keys.OemPeriod => ".", Keys.OemSemicolon => ";", Keys.OemQuestion => "/",
         Keys.OemQuotes => "'", Keys.OemOpenBrackets => "[", Keys.OemCloseBrackets => "]", Keys.OemMinus => "-",
         Keys.Oemplus => "=", Keys.Oemtilde => "`", Keys.OemPipe => "\\", Keys.Space => "Space",
-        Keys.ShiftKey => "Shift", Keys.ControlKey => "Ctrl", Keys.Menu => "Alt", _ => key.ToString()
+        Keys.ShiftKey => "Shift", Keys.ControlKey => "Ctrl", Keys.Menu => "Alt",
+        Keys.Up => "↑", Keys.Down => "↓", Keys.Left => "←", Keys.Right => "→", _ => key.ToString()
     };
 }
