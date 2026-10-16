@@ -147,7 +147,9 @@ public sealed class KeyboardOutput : IDisposable
         // Arrow keys, Insert/Delete/Home/End/PgUp/PgDn, right Ctrl/Alt etc.
         // have an 0xE0 prefix. Without the extended flag Windows sees the
         // numpad key instead, and a down/up pair can end up on different keys.
-        if ((scanCode & 0xFF00) == 0xE000) flags |= KeyEventExtendedKey;
+        // MapVirtualKey does not report the prefix for arrow keys (VK_UP -> 0x48,
+        // the Numpad 8 code), so those keys are also matched explicitly.
+        if ((scanCode & 0xFF00) == 0xE000 || IsExtendedKey(key)) flags |= KeyEventExtendedKey;
 
         var input = new Input
         {
@@ -180,6 +182,14 @@ public sealed class KeyboardOutput : IDisposable
             Logger.Warn($"SendInput rejected {key} {(keyUp ? "up" : "down")} (GetLastError={Marshal.GetLastWin32Error()}); retrying until Windows accepts it");
         return false;
     }
+
+    private static bool IsExtendedKey(Keys key) => (key & Keys.KeyCode) switch
+    {
+        Keys.Up or Keys.Down or Keys.Left or Keys.Right or
+        Keys.Insert or Keys.Delete or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown or
+        Keys.RControlKey or Keys.RMenu or Keys.Divide or Keys.LWin or Keys.RWin or Keys.Apps => true,
+        _ => false
+    };
 
     public void Dispose() => ReleaseAllInputs();
 }
