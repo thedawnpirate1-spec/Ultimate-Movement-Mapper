@@ -309,10 +309,10 @@ public sealed class MainForm : Form
         _autoStartMovement.CheckedChanged += (_, _) => { _appSettings.AutoStartMovement = _autoStartMovement.Checked; _appSettings.Save(); };
 
         _filterKeysEnabled.Text = "Faster key repeat (Windows Filter Keys)"; _filterKeysEnabled.AutoSize = true; _filterKeysEnabled.Checked = _appSettings.FilterKeysEnabled;
-        _filterKeysDelay.Minimum = 0; _filterKeysDelay.Maximum = 1000; _filterKeysDelay.Increment = 10; _filterKeysDelay.Width = 82;
-        _filterKeysDelay.Value = Math.Clamp(_appSettings.FilterKeysDelayMs, 0, 1000);
-        _filterKeysRepeat.Minimum = 1; _filterKeysRepeat.Maximum = 500; _filterKeysRepeat.Width = 82;
-        _filterKeysRepeat.Value = Math.Clamp(_appSettings.FilterKeysRepeatMs, 1, 500);
+        _filterKeysDelay.Minimum = FilterKeysTweak.MinDelayMs; _filterKeysDelay.Maximum = 1000; _filterKeysDelay.Increment = 10; _filterKeysDelay.Width = 82;
+        _filterKeysDelay.Value = Math.Clamp(_appSettings.FilterKeysDelayMs, FilterKeysTweak.MinDelayMs, 1000);
+        _filterKeysRepeat.Minimum = FilterKeysTweak.MinRepeatMs; _filterKeysRepeat.Maximum = 500; _filterKeysRepeat.Width = 82;
+        _filterKeysRepeat.Value = Math.Clamp(_appSettings.FilterKeysRepeatMs, FilterKeysTweak.MinRepeatMs, 500);
         _filterKeysStatus.AutoSize = true; _filterKeysStatus.MaximumSize = new Size(450, 0); _filterKeysStatus.Tag = "muted";
         _filterKeysEnabled.CheckedChanged += (_, _) =>
         {

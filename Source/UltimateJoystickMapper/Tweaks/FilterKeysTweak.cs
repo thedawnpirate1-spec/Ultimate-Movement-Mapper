@@ -37,6 +37,11 @@ public static class FilterKeysTweak
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SystemParametersInfo(uint action, uint param, ref FilterKeys value, uint winIni);
 
+    // Below these values a normal key press already repeats, so typing produces
+    // duplicated letters (for example 10 ms / 1 ms).
+    public const int MinDelayMs = 100;
+    public const int MinRepeatMs = 10;
+
     public static FilterKeysState Read()
     {
         var value = new FilterKeys { Size = (uint)Marshal.SizeOf<FilterKeys>() };
@@ -52,7 +57,7 @@ public static class FilterKeysTweak
         // The Shift-hold hotkey, its confirmation and the tray indicator are switched off
         // so holding Shift in game cannot toggle Filter Keys or show a dialog.
         var flags = (current.Flags & ~(HotkeyActive | ConfirmHotkey | Indicator | ClickOn)) | FilterKeysOn | FilterKeysAvailable;
-        Write(new FilterKeysState(flags, 0, (uint)Math.Clamp(delayMs, 0, 2000), (uint)Math.Clamp(repeatMs, 1, 500), 0));
+        Write(new FilterKeysState(flags, 0, (uint)Math.Clamp(delayMs, MinDelayMs, 2000), (uint)Math.Clamp(repeatMs, MinRepeatMs, 500), 0));
     }
 
     public static void Restore(FilterKeysState original) => Write(original);
