@@ -72,6 +72,10 @@ Notes:
 
 ## Tweaks tab
 
+**In-game protection:** *Block Sticky Keys / Toggle Keys / Filter Keys popups* turns off the Windows shortcuts that open a dialog in game (Shift five times, holding NumLock or right Shift). *Lock the Windows key while Fortnite is in front* swallows both Windows keys only while the game window is focused, via a low-level keyboard hook on its own thread.
+
+**Performance:** *Run the mapper at above-normal priority* raises only the mapper process, never Fortnite.
+
 **Faster key repeat (Windows Filter Keys)** shortens the key-repeat delay and speeds up the repeat rate beyond what the normal Windows keyboard settings allow (defaults 150 ms delay, 15 ms between repeats). It affects your physical keyboard only; the mapper's movement keys are held without repeat. The change is session-only and Windows' original values are restored when you switch it off or close the mapper.
 
 The Diagnostics tab shows the stick's measured USB read rate in Hz. The mapper does not install USB overclocking drivers such as hidusbf: they are unsigned kernel drivers and risky with Easy Anti-Cheat.

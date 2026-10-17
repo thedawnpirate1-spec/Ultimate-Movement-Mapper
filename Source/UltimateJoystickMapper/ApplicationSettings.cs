@@ -11,6 +11,10 @@ public sealed class ApplicationSettings
     public int FilterKeysRepeatMs { get; set; } = 15;
     // Windows' own values before the tweak was first switched on, restored when it is switched off.
     public Tweaks.FilterKeysState? FilterKeysOriginal { get; set; }
+    public bool DisableAccessibilityShortcuts { get; set; }
+    public Tweaks.AccessibilityShortcutState? AccessibilityShortcutsOriginal { get; set; }
+    public bool HighPriority { get; set; }
+    public bool BlockWinKeyInGame { get; set; }
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GMKRebuild", "app-settings.json");

@@ -74,6 +74,10 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _filterKeysDelay = new();
     private readonly NumericUpDown _filterKeysRepeat = new();
     private readonly Label _filterKeysStatus = new();
+    private readonly CheckBox _noAccessibilityPopups = new();
+    private readonly CheckBox _blockWinKey = new();
+    private readonly CheckBox _highPriority = new();
+    private WinKeyBlocker? _winKeyBlocker;
     private const long MouseIdleNudgeMs = 3000;
     private readonly Label _diagDevice = new();
     private readonly Label _diagHidHide = new();
@@ -114,6 +118,7 @@ public sealed class MainForm : Form
     private long _lastLoopTick;
     private const long LoopStallReleaseMs = 300;
     private int _watchdogBusy;
+    private int _liveUpdatePending;
     private System.Threading.Timer? _keyWatchdog;
     private double _pollingRate;
     private double _latencyMs;
@@ -156,7 +161,9 @@ public sealed class MainForm : Form
             Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
             _keyWatchdog?.Dispose();
             _keyboard.ReleaseAllInputs();
-            if (_appSettings.FilterKeysEnabled) RestoreFilterKeys(forgetOriginal: false);
+            if (_appSettings.FilterKeysEnabled) RestoreFilterKeys(forgetOriginal: false, keepPopupBlock: false);
+            if (_appSettings.DisableAccessibilityShortcuts) RestoreAccessibilityShortcuts(forgetOriginal: false);
+            _winKeyBlocker?.Dispose();
             _trayIcon.Visible = false; _trayIcon.Dispose();
         };
         Resize += (_, _) => MinimizeToTray();
@@ -317,6 +324,28 @@ public sealed class MainForm : Form
         _toolTip.SetToolTip(_filterKeysDelay, "Time a key must be held before it starts repeating. Windows' normal minimum is 250 ms.");
         _toolTip.SetToolTip(_filterKeysRepeat, "Time between repeated key presses while a key is held. Lower is faster.");
         if (_filterKeysEnabled.Checked) ApplyFilterKeys(); else RefreshFilterKeysStatus();
+
+        _noAccessibilityPopups.Text = "Block Sticky Keys / Toggle Keys / Filter Keys popups"; _noAccessibilityPopups.AutoSize = true;
+        _noAccessibilityPopups.Checked = _appSettings.DisableAccessibilityShortcuts;
+        _noAccessibilityPopups.CheckedChanged += (_, _) =>
+        {
+            _appSettings.DisableAccessibilityShortcuts = _noAccessibilityPopups.Checked; _appSettings.Save();
+            if (_noAccessibilityPopups.Checked) DisableAccessibilityShortcuts(); else RestoreAccessibilityShortcuts(forgetOriginal: true);
+        };
+        _toolTip.SetToolTip(_noAccessibilityPopups, "Pressing Shift five times or holding NumLock / right Shift no longer opens a Windows dialog in game.");
+        if (_noAccessibilityPopups.Checked) DisableAccessibilityShortcuts();
+
+        _blockWinKey.Text = "Lock the Windows key while Fortnite is in front"; _blockWinKey.AutoSize = true;
+        _blockWinKey.Checked = _appSettings.BlockWinKeyInGame;
+        _blockWinKey.CheckedChanged += (_, _) => { _appSettings.BlockWinKeyInGame = _blockWinKey.Checked; _appSettings.Save(); UpdateWinKeyBlocker(); };
+        _toolTip.SetToolTip(_blockWinKey, "Only while the game window is focused. In every other window the Windows key works normally.");
+        UpdateWinKeyBlocker();
+
+        _highPriority.Text = "Run the mapper at above-normal priority"; _highPriority.AutoSize = true;
+        _highPriority.Checked = _appSettings.HighPriority;
+        _highPriority.CheckedChanged += (_, _) => { _appSettings.HighPriority = _highPriority.Checked; _appSettings.Save(); ApplyProcessPriority(); };
+        _toolTip.SetToolTip(_highPriority, "Keeps stick input flowing when the game loads the CPU. Changes only the mapper, never Fortnite.");
+        ApplyProcessPriority();
         _toolTip.SetToolTip(_diagonalStart, "Where each forward lock zone begins, measured upward from the horizontal centre line.");
         _toolTip.SetToolTip(_diagonalWindow, "Width of each purple forward lock zone.");
         _toolTip.SetToolTip(_antiDeadzone, "Minimum virtual-stick output after leaving the centre deadzone.");
@@ -627,8 +656,8 @@ public sealed class MainForm : Form
     private TabPage BuildTweaksTab()
     {
         var page = new TabPage("Tweaks") { Padding = new Padding(14), Tag = "card" };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
-        for (var i = 0; i < 5; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 10, AutoScroll = true };
+        for (var i = 0; i < 10; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(SectionTitle("Keyboard repeat"), 0, 0);
         layout.Controls.Add(_filterKeysEnabled, 0, 1);
         var values = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 6, 0, 6) };
@@ -644,8 +673,20 @@ public sealed class MainForm : Form
             Text = "Affects your physical keyboard only (for example faster edits and repeated build keys). " +
                    "Mapper movement keys are held without repeat and are not changed. Windows' original values " +
                    "are restored when you switch this off or close the mapper.",
-            AutoSize = true, MaximumSize = new Size(450, 0), Tag = "muted", Margin = new Padding(0, 8, 0, 0)
+            AutoSize = true, MaximumSize = new Size(450, 0), Tag = "muted", Margin = new Padding(0, 8, 0, 12)
         }, 0, 4);
+        layout.Controls.Add(SectionTitle("In-game protection"), 0, 5);
+        var protection = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0, 2, 0, 6) };
+        protection.Controls.Add(_noAccessibilityPopups); protection.Controls.Add(_blockWinKey);
+        layout.Controls.Add(protection, 0, 6);
+        layout.Controls.Add(SectionTitle("Performance"), 0, 7);
+        layout.Controls.Add(_highPriority, 0, 8);
+        layout.Controls.Add(new Label
+        {
+            Text = "All tweaks are undone when switched off or when the mapper closes. " +
+                   "Nothing is installed and Fortnite itself is never modified.",
+            AutoSize = true, MaximumSize = new Size(450, 0), Tag = "muted", Margin = new Padding(0, 8, 0, 0)
+        }, 0, 9);
         page.Controls.Add(layout); return page;
     }
 
@@ -668,12 +709,14 @@ public sealed class MainForm : Form
         RefreshFilterKeysStatus();
     }
 
-    private void RestoreFilterKeys(bool forgetOriginal)
+    private void RestoreFilterKeys(bool forgetOriginal, bool keepPopupBlock = true)
     {
         if (_appSettings.FilterKeysOriginal is not { } original) { RefreshFilterKeysStatus(); return; }
         try
         {
             FilterKeysTweak.Restore(original);
+            // Restoring Filter Keys brings back its Shift shortcut; keep it off while that tweak is on.
+            if (keepPopupBlock && _appSettings.DisableAccessibilityShortcuts) AccessibilityHotkeys.DisableShortcuts();
             Logger.Info("Filter Keys restored to the Windows values");
             if (forgetOriginal) { _appSettings.FilterKeysOriginal = null; _appSettings.Save(); }
         }
@@ -682,6 +725,75 @@ public sealed class MainForm : Form
             Logger.Error("Could not restore Filter Keys", ex);
         }
         RefreshFilterKeysStatus();
+    }
+
+    private void DisableAccessibilityShortcuts()
+    {
+        try
+        {
+            if (_appSettings.AccessibilityShortcutsOriginal is null)
+            {
+                var current = AccessibilityHotkeys.Read();
+                // While the Filter Keys tweak is on its shortcut bits are already cleared;
+                // the true Windows value is the one saved by that tweak.
+                if (_appSettings.FilterKeysOriginal is { } filterOriginal)
+                    current = current with { Filter = filterOriginal.Flags & 0x000C };
+                _appSettings.AccessibilityShortcutsOriginal = current;
+                _appSettings.Save();
+            }
+            AccessibilityHotkeys.DisableShortcuts();
+            Logger.Info("Sticky / Toggle / Filter Keys shortcuts disabled");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not disable accessibility shortcuts", ex);
+        }
+    }
+
+    private void RestoreAccessibilityShortcuts(bool forgetOriginal)
+    {
+        if (_appSettings.AccessibilityShortcutsOriginal is not { } original) return;
+        try
+        {
+            AccessibilityHotkeys.Restore(original);
+            Logger.Info("Accessibility shortcuts restored to the Windows values");
+            if (forgetOriginal) { _appSettings.AccessibilityShortcutsOriginal = null; _appSettings.Save(); }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not restore accessibility shortcuts", ex);
+        }
+    }
+
+    private void UpdateWinKeyBlocker()
+    {
+        if (_appSettings.BlockWinKeyInGame)
+        {
+            _winKeyBlocker ??= new WinKeyBlocker(_profile.TargetProcessName);
+            _winKeyBlocker.Start();
+            Logger.Info("Windows key lock active while the game is focused");
+        }
+        else if (_winKeyBlocker is not null)
+        {
+            _winKeyBlocker.Dispose();
+            _winKeyBlocker = null;
+            Logger.Info("Windows key lock off");
+        }
+    }
+
+    private void ApplyProcessPriority()
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            process.PriorityClass = _appSettings.HighPriority
+                ? System.Diagnostics.ProcessPriorityClass.AboveNormal
+                : System.Diagnostics.ProcessPriorityClass.Normal;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not change the mapper priority", ex);
+        }
     }
 
     private void RefreshFilterKeysStatus()
@@ -1037,7 +1149,15 @@ public sealed class MainForm : Form
                     var visualInterval = _profile.LowLatencyMode ? 50 : 16;
                     if (now - lastVisualUpdate < visualInterval) continue;
                     lastVisualUpdate = now;
-                    BeginInvoke((Action)(() => UpdateLiveDisplay(x, y, movement, aPressed, bindings, analog)));
+                    // At most one live update may wait on the UI thread. Without this the read
+                    // loop could queue updates faster than they are drawn, and a flooded message
+                    // queue starves WM_PAINT, so newly opened tabs stayed blank.
+                    if (Interlocked.Exchange(ref _liveUpdatePending, 1) == 1) continue;
+                    BeginInvoke((Action)(() =>
+                    {
+                        try { UpdateLiveDisplay(x, y, movement, aPressed, bindings, analog); }
+                        finally { Volatile.Write(ref _liveUpdatePending, 0); }
+                    }));
                 }
             }
             catch (Exception ex)
