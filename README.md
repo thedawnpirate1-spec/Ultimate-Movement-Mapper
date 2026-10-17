@@ -1,4 +1,4 @@
-# Ultimate Joystick Mapper
+# Ultimate Joystick Mapper — DP Edition
 
 This is a clean-room replacement for the old GMK DriverNet user-mode app. It is deliberately split into three pieces:
 

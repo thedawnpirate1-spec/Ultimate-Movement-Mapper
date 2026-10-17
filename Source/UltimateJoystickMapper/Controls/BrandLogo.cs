@@ -20,20 +20,42 @@ public static class AppBrand
         finally { DestroyIcon(handle); }
     }
 
+    // DP monogram on the app's teal-to-indigo tile. Drawn as geometry rather than
+    // text so it looks identical on every PC, whatever fonts are installed.
     public static void Draw(Graphics graphics, Rectangle bounds)
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var scale = Math.Min(bounds.Width, bounds.Height) / 64f;
         graphics.TranslateTransform(bounds.Left, bounds.Top); graphics.ScaleTransform(scale, scale);
-        using var shadow = new SolidBrush(Color.FromArgb(55, 0, 0, 0)); graphics.FillEllipse(shadow, 5, 7, 54, 54);
-        using var baseBrush = new LinearGradientBrush(new Rectangle(4, 3, 56, 56), Color.FromArgb(45, 212, 191), Color.FromArgb(99, 102, 241), 35f);
-        graphics.FillRoundedRectangle(baseBrush, new RectangleF(4, 3, 56, 56), 16);
-        using var inner = new SolidBrush(Color.FromArgb(238, 15, 23, 42)); graphics.FillEllipse(inner, 13, 12, 38, 38);
-        using var track = new Pen(Color.FromArgb(220, 255, 255, 255), 4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        graphics.DrawArc(track, 18, 17, 28, 28, 35, 285);
-        using var arrow = new Pen(Color.White, 4.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        graphics.DrawLine(arrow, 23, 32, 43, 32); graphics.DrawLine(arrow, 37, 25, 44, 32); graphics.DrawLine(arrow, 37, 39, 44, 32);
-        using var input = new SolidBrush(Color.FromArgb(74, 222, 128)); graphics.FillEllipse(input, 14, 27, 10, 10);
+
+        using var shadow = new SolidBrush(Color.FromArgb(55, 0, 0, 0));
+        graphics.FillRoundedRectangle(shadow, new RectangleF(5, 6, 56, 56), 16);
+        using var tile = new LinearGradientBrush(new Rectangle(4, 3, 56, 56), Color.FromArgb(45, 212, 191), Color.FromArgb(99, 102, 241), 35f);
+        graphics.FillRoundedRectangle(tile, new RectangleF(4, 3, 56, 56), 16);
+        using var inset = new SolidBrush(Color.FromArgb(235, 15, 23, 42));
+        graphics.FillRoundedRectangle(inset, new RectangleF(9, 8, 46, 46), 12);
+
+        // D: stem and bowl, white.
+        using var dPen = new Pen(Color.White, 5f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using (var dPath = new GraphicsPath())
+        {
+            dPath.AddLine(15, 17, 15, 45);
+            dPath.AddLine(15, 45, 19, 45);
+            dPath.AddArc(6, 17, 26, 28, 90, -180);
+            dPath.CloseFigure();
+            graphics.DrawPath(dPen, dPath);
+        }
+
+        // P: stem and bowl in the accent green.
+        using var pPen = new Pen(Color.FromArgb(74, 222, 128), 5f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using (var pPath = new GraphicsPath())
+        {
+            pPath.AddLine(38, 45, 38, 17);
+            pPath.AddLine(38, 17, 43, 17);
+            pPath.AddArc(36, 17, 14, 15, 270, 180);
+            pPath.AddLine(43, 32, 38, 32);
+            graphics.DrawPath(pPen, pPath);
+        }
         graphics.ResetTransform();
     }
 

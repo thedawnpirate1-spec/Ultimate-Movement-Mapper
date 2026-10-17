@@ -551,7 +551,7 @@ public sealed class MainForm : Form
         var header = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20, 29, 44), Padding = new Padding(24, 14, 24, 12), Tag = "header" };
         var logo = new BrandLogo { Location = new Point(22, 15) };
         var title = new Label { Text = "Ultimate Joystick Mapper", AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold), Location = new Point(80, 10), Tag = "header" };
-        _subtitle = new Label { Text = $"GMK to Keyboard Movement · v{UpdateChecker.CurrentVersion.ToString(3)}", AutoSize = true, ForeColor = Color.FromArgb(174, 187, 207), Font = new Font("Segoe UI", 9F), Location = new Point(82, 44), Tag = "header" };
+        _subtitle = new Label { Text = $"DP Edition · GMK to Keyboard Movement · v{UpdateChecker.CurrentVersion.ToString(3)}", AutoSize = true, ForeColor = Color.FromArgb(174, 187, 207), Font = new Font("Segoe UI", 9F), Location = new Point(82, 44), Tag = "header" };
         _updateLink.AutoSize = true;
         _updateLink.Visible = false;
         _updateLink.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
@@ -1370,7 +1370,8 @@ public sealed class MainForm : Form
         _advancedToggle.Visible = controller;
         _dragZonesButton.Enabled = controller && _runCts is null;
         _outputCaption.Text = controller ? "Controller output" : "Keyboard output";
-        if (_subtitle is not null) _subtitle.Text = controller ? "GMK to Controller Movement" : "GMK to Keyboard Movement";
+        if (_subtitle is not null)
+            _subtitle.Text = $"DP Edition · GMK to {(controller ? "Controller" : "Keyboard")} Movement · v{UpdateChecker.CurrentVersion.ToString(3)}";
         _diagonalAngle.Enabled = controller && _diagonalLock.Checked && _runCts is null;
         _diagonalWindow.Enabled = controller && _diagonalLock.Checked && _runCts is null;
         _diagonalStart.Enabled = controller && _diagonalLock.Checked && _runCts is null;
